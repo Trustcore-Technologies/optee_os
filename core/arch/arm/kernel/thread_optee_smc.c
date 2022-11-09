@@ -266,6 +266,16 @@ out:
 	return rv;
 }
 
+static uint32_t trustcore_smc_handler(uint64_t arg1, uint64_t arg2, uint64_t arg3)
+{
+    EMSG("\nTrustcore args");
+    EMSG("arg1 0x%"PRIx64, arg1);
+    EMSG("arg2 0x%"PRIx64, arg2);
+    EMSG("arg3 0x%"PRIx64, arg3);
+
+    return 0;
+}
+
 static uint32_t std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2,
 			      uint32_t a3 __unused)
 {
@@ -280,6 +290,8 @@ static uint32_t std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2,
 					   with_rpc_arg);
 	case OPTEE_SMC_CALL_WITH_REGD_ARG:
 		return std_entry_with_regd_arg(reg_pair_to_64(a1, a2), a3);
+	case TRUSTCORE_SMC_CALL_WITH_REGD_ARG:
+		return trustcore_smc_handler(a1, a2, a3);
 	default:
 		EMSG("Unknown SMC 0x%"PRIx32, a0);
 		return OPTEE_SMC_RETURN_EBADCMD;
