@@ -19,11 +19,6 @@ uint32_t trustcore_smc_handler(uint64_t arg1, uint64_t arg2, uint64_t arg3)
     return 0;
 }
 
-TEE_Result tc_entry_point(void)
-{
-    EMSG("Trustcore pta");
-}
-
 static TEE_Result invoke_command(void *psess __unused,
 				 uint32_t cmd, uint32_t ptypes,
 				 TEE_Param params[TEE_NUM_PARAMS])
@@ -34,5 +29,4 @@ static TEE_Result invoke_command(void *psess __unused,
 
 pseudo_ta_register(.uuid = TA_UUID, .name = TA_NAME,
 		   .flags = PTA_DEFAULT_FLAGS,
-                   .create_entry_point = tc_entry_point,
                    .invoke_command_entry_point = invoke_command);
