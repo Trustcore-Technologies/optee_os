@@ -266,15 +266,7 @@ out:
 	return rv;
 }
 
-static uint32_t trustcore_smc_handler(uint64_t arg1, uint64_t arg2, uint64_t arg3)
-{
-    EMSG("\nTrustcore args");
-    EMSG("arg1 0x%"PRIx64, arg1);
-    EMSG("arg2 0x%"PRIx64, arg2);
-    EMSG("arg3 0x%"PRIx64, arg3);
-
-    return 0;
-}
+extern uint32_t trustcore_smc_handler(uint64_t arg1, uint64_t arg2, uint64_t arg3);
 
 static uint32_t std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2,
 			      uint32_t a3 __unused)
