@@ -128,4 +128,6 @@ void bstgw_ethpool_buf_free(bstgw_ethbuf_t *eb);
 /* Destroy a buffer, i.e., remove it from the pool and free its memory */
 void bstgw_ethpool_buf_destroy(bstgw_ethbuf_t *eb);
 
+int bstgw_ethpool_init(void);
+
 #endif /* __BSTGW_ETH_BUF_H */
