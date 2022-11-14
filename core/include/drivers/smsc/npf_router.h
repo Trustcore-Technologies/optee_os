@@ -15,8 +15,23 @@
 #ifndef _NPF_ROUTER_H_
 #define _NPF_ROUTER_H_
 
+typedef struct {
+	unsigned		if_idx;
+	unsigned		addr_len;
+//	npf_addr_t		next_hop;
+	unsigned		if_addr_idx;   // IP to use for ARP requests (0:default)
+} route_info_t;
+
+typedef struct {
+	unsigned		flags;
+	unsigned		ether_type;
+	route_info_t	route;
+	unsigned 		out_if_idx;
+} npf_mbuf_priv_t;
 
 typedef struct ifnet {
+
+
 //	LIST_ENTRY(ifnet)	entry;
 //	unsigned int		ifnet_idx; // for router ifnet_map
 //

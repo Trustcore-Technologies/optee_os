@@ -49,10 +49,10 @@ static inline const unsigned char *skb_head(struct sk_buff *skb) {
 
 /* TODO: scatter gather I/O support */
 static inline unsigned char skb_nr_frags(struct sk_buff *skb) {
-	if(likely( !skb->eth_buf.next )) return 0;
-	// count number of chained ethbufs
 	unsigned char n = 0;
 	bstgw_ethbuf_t *b = skb->eth_buf.next;
+	if(likely( !skb->eth_buf.next )) return 0;
+	// count number of chained ethbufs
 	while( b ) { n++; b = b->next; }
 	return n;
 }
@@ -76,9 +76,10 @@ static inline unsigned char skb_nr_frags(struct sk_buff *skb) {
 //		NOTE:  often this fct. is used for the 2B ethernet-IP alginment fix,
 //			   but we already have that in our struct definition atm.
 static inline void skb_reserve(struct sk_buff *skb, int len) {
+	int cap;
 	assert(skb->eth_buf.data_len == 0);
-	int cap = bstgw_ethbuf_buf_capacity(&skb->eth_buf);
-	if(unlikely( len <= (cap - skb->eth_buf.data_off) )) {
+	cap = bstgw_ethbuf_buf_capacity(&skb->eth_buf);
+	if(unlikely( (size_t)len <= (cap - skb->eth_buf.data_off) )) {
 		EMSG("reserve len > rest buffer size (len: %d, data_off: %u)", len, skb->eth_buf.data_off);
 		panic();
 	}
