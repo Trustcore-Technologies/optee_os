@@ -18,7 +18,9 @@
 #include <tee_api_defines_extensions.h>
 #include <tee_api_types.h>
 #include <drivers/smsc/errno.h>
+#include <drivers/smsc/mii.h>
 #include <io.h>
+#include <kernel/delay.h>
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -48,16 +50,23 @@ static const char * chip_ids[ 16 ] =  {
 static TEE_Result init_eth();
 static TEE_Result smc_probe(void  *ioaddr);
 static void smc_reset();
+static void smc_phy_detect();
+static void smc_phy_write(int phyaddr, int phyreg, int phydata);
+static int smc_phy_read(int phyaddr, int phyreg);
+static void smc_mii_out(unsigned int val, int bits);
+static unsigned int smc_mii_in(int bits);
 
 static TEE_Result
 smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 	EMSG("SMSC probe()");
 
+	struct dt_node_info dt_smsc = {};
 	const struct platform_device_id *smsc_id_data;
 	int ret = 0;
 
 	ret = bstgw_ethpool_init();
 
+	_fdt_fill_device_info(fdt, &dt_smsc, dev);
 
 	smsc = malloc(sizeof(struct smc_local));
 	if (!smsc)
@@ -173,6 +182,24 @@ static TEE_Result smc_probe(void  *ioaddr)
 	/* now, reset the chip, and put it into a known state */
 	smc_reset();
 
+	/*
+	 * Locate the phy, if any.
+	 */
+	if (smsc->version >= (CHIP_91100 << 4))
+		smc_phy_detect();
+
+	/* Set default parameters */
+	smsc->msg_enable = NETIF_MSG_LINK;
+	smsc->ctl_rfduplx = 0;
+	smsc->ctl_rspeed = 10;
+
+	if (smsc->version >= (CHIP_91100 << 4)) {
+		smsc->ctl_rfduplx = 1;
+		smsc->ctl_rspeed = 100;
+	}
+
+	ret = irq_add(irq, ITRF_TRIGGER_LEVEL, &fep->handler);
+
 	return TEE_SUCCESS;
 
 	err_out:
@@ -243,7 +270,7 @@ void smc_reset()
 	 * driver(s) have always done.  Suspect undocumented timing
 	 * info/determined empirically. --rmk
 	 */
-	//udelay(1);
+	udelay(1);
 
 	/* Disable transmit and receive functionality */
 	SMC_SELECT_BANK(smsc, 0);
@@ -268,6 +295,136 @@ void smc_reset()
 	SMC_SELECT_BANK(smsc, 2);
 	SMC_SET_MMU_CMD(smsc, MC_RESET);
 	//SMC_WAIT_MMU_BUSY(smsc);
+}
+
+
+/*
+ * Finds and reports the PHY address
+ */
+void smc_phy_detect()
+{
+	int phyaddr;
+
+	smsc->phy_type = 0;
+
+	/*
+	 * Scan all 32 PHY addresses if necessary, starting at
+	 * PHY#1 to PHY#31, and then PHY#0 last.
+	 */
+	for (phyaddr = 1; phyaddr < 33; ++phyaddr) {
+		unsigned int id1, id2;
+
+		/* Read the PHY identifiers */
+		id1 = smc_phy_read(phyaddr & 31, MII_PHYSID1);
+		id2 = smc_phy_read(phyaddr & 31, MII_PHYSID2);
+
+		DMSG("phy_id1=0x%x, phy_id2=0x%x\n", id1, id2);
+
+		/* Make sure it is a valid identifier */
+		if (id1 != 0x0000 && id1 != 0xffff && id1 != 0x8000 &&
+		    id2 != 0x0000 && id2 != 0xffff && id2 != 0x8000) {
+			/* Save the PHY's address */
+			smsc->mii.phy_id = phyaddr & 31;
+			smsc->phy_type = id1 << 16 | id2;
+			break;
+		}
+	}
+}
+
+/*
+ * Reads a register from the MII Management serial interface
+ */
+int smc_phy_read(int phyaddr, int phyreg)
+{
+	void __iomem *ioaddr = smsc->base;
+	unsigned int phydata;
+
+	SMC_SELECT_BANK(smsc, 3);
+
+	/* Idle - 32 ones */
+	smc_mii_out(0xffffffff, 32);
+
+	/* Start code (01) + read (10) + phyaddr + phyreg */
+	smc_mii_out(6 << 10 | phyaddr << 5 | phyreg, 14);
+
+	/* Turnaround (2bits) + phydata */
+	phydata = smc_mii_in(18);
+
+	/* Return to idle state */
+	SMC_SET_MII(smsc, SMC_GET_MII(smsc) & ~(MII_MCLK|MII_MDOE|MII_MDO));
+
+	//EMSG("%s: phyaddr=0x%x, phyreg=0x%x, phydata=0x%x\n", __func__, phyaddr, phyreg, phydata);
+
+	SMC_SELECT_BANK(smsc, 2);
+	return phydata;
+}
+
+/*
+ * Writes a register to the MII Management serial interface
+ */
+void smc_phy_write(int phyaddr, int phyreg,
+			  int phydata)
+{
+	void __iomem *ioaddr = smsc->base;
+
+	SMC_SELECT_BANK(smsc, 3);
+
+	/* Idle - 32 ones */
+	smc_mii_out(0xffffffff, 32);
+
+	/* Start code (01) + write (01) + phyaddr + phyreg + turnaround + phydata */
+	smc_mii_out(5 << 28 | phyaddr << 23 | phyreg << 18 | 2 << 16 | phydata, 32);
+
+	/* Return to idle state */
+	SMC_SET_MII(smsc, SMC_GET_MII(smsc) & ~(MII_MCLK|MII_MDOE|MII_MDO));
+
+	//EMSG("%s: phyaddr=0x%x, phyreg=0x%x, phydata=0x%x\n", __func__, phyaddr, phyreg, phydata);
+
+	SMC_SELECT_BANK(smsc, 2);
+}
+
+/*---PHY CONTROL AND CONFIGURATION-----------------------------------------*/
+
+void smc_mii_out(unsigned int val, int bits)
+{
+	void __iomem *ioaddr = smsc->base;
+	unsigned int mii_reg, mask;
+
+	mii_reg = SMC_GET_MII(smsc) & ~(MII_MCLK | MII_MDOE | MII_MDO);
+	mii_reg |= MII_MDOE;
+
+	for (mask = 1 << (bits - 1); mask; mask >>= 1) {
+		if (val & mask)
+			mii_reg |= MII_MDO;
+		else
+			mii_reg &= ~MII_MDO;
+
+		SMC_SET_MII(smsc, mii_reg);
+		udelay(MII_DELAY);
+		SMC_SET_MII(smsc, mii_reg | MII_MCLK);
+		udelay(MII_DELAY);
+	}
+}
+
+unsigned int smc_mii_in(int bits)
+{
+	void __iomem *ioaddr = smsc->base;
+	unsigned int mii_reg, mask, val;
+
+	mii_reg = SMC_GET_MII(smsc) & ~(MII_MCLK | MII_MDOE | MII_MDO);
+	SMC_SET_MII(smsc, mii_reg);
+
+	for (mask = 1 << (bits - 1), val = 0; mask; mask >>= 1) {
+		if (SMC_GET_MII(smsc) & MII_MDI)
+			val |= mask;
+
+		SMC_SET_MII(smsc, mii_reg);
+		udelay(MII_DELAY);
+		SMC_SET_MII(smsc, mii_reg | MII_MCLK);
+		udelay(MII_DELAY);
+	}
+
+	return val;
 }
 
 TEE_Result init_eth()

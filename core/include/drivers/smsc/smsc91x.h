@@ -30,6 +30,16 @@
 
 #define CARDNAME "smc91x"
 
+#define CHIP_9192	3
+#define CHIP_9194	4
+#define CHIP_9195	5
+#define CHIP_9196	6
+#define CHIP_91100	7
+#define CHIP_91100FD	8
+#define CHIP_91111FD	9
+
+#define NETIF_MSG_LINK	0
+
 #define SMC_REG(smsc, reg, bank)	(reg<<SMC_IO_SHIFT)
 
 // Base Address Register
@@ -120,6 +130,12 @@
  * Note this is not a cure for a too slow data bus or too high IRQ latency.
  */
 #define THROTTLE_TX_PKTS	0
+
+/*
+ * The MII clock high/low times.  2x this number gives the MII clock period
+ * in microseconds. (was 50, but this gives 6.4ms for each MII transaction!)
+ */
+#define MII_DELAY		1
 
 // Revision Register
 /* BANK 3 */
@@ -221,6 +237,10 @@
 
 #define SMC_SET_MMU_CMD(smsc, x)	SMC_outw(x, ioaddr, MMU_CMD_REG(smsc))
 
+#define SMC_SET_MII(smsc, x)		SMC_outw(x, ioaddr, MII_REG(smsc))
+
+#define SMC_GET_MII(smsc)		SMC_inw(ioaddr, MII_REG(smsc))
+
 // Interrupt Mask Register
 /* BANK 2 */
 #define IM_REG(smsc)		SMC_REG(smsc, 0x000D, 2)
@@ -233,6 +253,14 @@
 #define IM_TX_INT	0x02 // Transmit Interrupt
 #define IM_RCV_INT	0x01 // Receive Interrupt
 
+// Management Interface Register (MII)
+/* BANK 3 */
+#define MII_REG(lp)		SMC_REG(lp, 0x0008, 3)
+#define MII_MSK_CRS100	0x4000 // Disables CRS100 detection during tx half dup
+#define MII_MDOE	0x0008 // MII Output Enable
+#define MII_MCLK	0x0004 // MII Clock, pin MDCLK
+#define MII_MDI		0x0002 // MII Input, pin MDI
+#define MII_MDO		0x0001 // MII Output, pin MDO
 
 // Interrupt Status/Acknowledge Register
 /* BANK 2 */
@@ -289,6 +317,21 @@ struct smc91x_platdata {
 	unsigned char ledb;
 };
 
+struct mii_if_info {
+	int phy_id;
+	int advertising;
+	int phy_id_mask;
+	int reg_num_mask;
+
+	unsigned int full_duplex : 1;	/* is full duplex? */
+	unsigned int force_media : 1;	/* is autoneg. disabled? */
+	unsigned int supports_gmii : 1; /* are GMII registers supported? */
+
+	struct net_device *dev;
+	int (*mdio_read) (struct net_device *dev, int phy_id, int location);
+	void (*mdio_write) (struct net_device *dev, int phy_id, int location, int val);
+};
+
 struct smc_local {
 //	/*
 //	 * If I have to wait until memory is available to send a
@@ -308,12 +351,12 @@ struct smc_local {
 //
 //	/* Contains the current active receive/phy mode */
 //	int	rpc_cur_mode;
-//	int	ctl_rfduplx;
-//	int	ctl_rspeed;
-//
-//	u32	msg_enable;
-//	u32	phy_type;
-//	struct mii_if_info mii;
+	int	ctl_rfduplx;
+	int	ctl_rspeed;
+
+	u32	msg_enable;
+	u32	phy_type;
+	struct mii_if_info mii;
 //
 //	/* work queue */
 //	struct work_struct phy_configure;
