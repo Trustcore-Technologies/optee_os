@@ -39,6 +39,7 @@
 #define CHIP_91111FD	9
 
 #define NETIF_MSG_LINK	0
+#define	netif_msg_link(x)		0
 
 #define SMC_REG(smsc, reg, bank)	(reg<<SMC_IO_SHIFT)
 
@@ -59,10 +60,21 @@
 #define RCR_FILT_CAR	0x0400	// When set filters leading 12 bit s of carrier
 #define RCR_SOFTRST	0x8000 	// resets the chip
 
+
+// Receive/Phy Control Register
+/* BANK 0  */
+#define RPC_REG(smsc)		SMC_REG(smsc, 0x000A, 0)
+#define RPC_SPEED	0x2000	// When 1 PHY is in 100Mbps mode.
+#define RPC_DPLX	0x1000	// When 1 PHY is in Full-Duplex Mode
+#define RPC_ANEG	0x0800	// When 1 PHY is in Auto-Negotiate Mode
+#define RPC_LSXA_SHFT	5	// Bits to shift LS2A,LS1A,LS0A to lsb
+#define RPC_LSXB_SHFT	2	// Bits to get LS2B,LS1B,LS0B to lsb
+
 /* the normal settings for the RCR register : */
 #define RCR_DEFAULT	(RCR_STRIP_CRC | RCR_RXEN)
 #define RCR_CLEAR	0x0	// set it to a base state
 
+#define RPC_DEFAULT (RPC_ANEG | RPC_SPEED | RPC_DPLX)
 
 // Transmit Control Register
 /* BANK 0  */
@@ -241,6 +253,74 @@
 
 #define SMC_GET_MII(smsc)		SMC_inw(ioaddr, MII_REG(smsc))
 
+#define SMC_SET_RPC(lp, x)						\
+	do {								\
+		if (SMC_MUST_ALIGN_WRITE(lp))				\
+			SMC_outl((x)<<16, ioaddr, SMC_REG(lp, 8, 0));	\
+		else							\
+			SMC_outw(x, ioaddr, RPC_REG(lp));		\
+	} while (0)
+
+#define SMC_GET_EPH_STATUS(lp)	SMC_inw(ioaddr, EPH_STATUS_REG(lp))
+
+// EPH Status Register
+/* BANK 0  */
+#define EPH_STATUS_REG(lp)	SMC_REG(lp, 0x0002, 0)
+#define ES_TX_SUC	0x0001	// Last TX was successful
+#define ES_SNGL_COL	0x0002	// Single collision detected for last tx
+#define ES_MUL_COL	0x0004	// Multiple collisions detected for last tx
+#define ES_LTX_MULT	0x0008	// Last tx was a multicast
+#define ES_16COL	0x0010	// 16 Collisions Reached
+#define ES_SQET		0x0020	// Signal Quality Error Test
+#define ES_LTXBRD	0x0040	// Last tx was a broadcast
+#define ES_TXDEFR	0x0080	// Transmit Deferred
+#define ES_LATCOL	0x0200	// Late collision detected on last tx
+#define ES_LOSTCARR	0x0400	// Lost Carrier Sense
+#define ES_EXC_DEF	0x0800	// Excessive Deferral
+#define ES_CTR_ROL	0x1000	// Counter Roll Over indication
+#define ES_LINK_OK	0x4000	// Driven by inverted value of nLNK pin
+#define ES_TXUNRN	0x8000	// Tx Underrun
+
+
+// PHY Configuration Register 1
+#define PHY_CFG1_REG		0x10
+#define PHY_CFG1_LNKDIS		0x8000	// 1=Rx Link Detect Function disabled
+#define PHY_CFG1_XMTDIS		0x4000	// 1=TP Transmitter Disabled
+#define PHY_CFG1_XMTPDN		0x2000	// 1=TP Transmitter Powered Down
+#define PHY_CFG1_BYPSCR		0x0400	// 1=Bypass scrambler/descrambler
+#define PHY_CFG1_UNSCDS		0x0200	// 1=Unscramble Idle Reception Disable
+#define PHY_CFG1_EQLZR		0x0100	// 1=Rx Equalizer Disabled
+#define PHY_CFG1_CABLE		0x0080	// 1=STP(150ohm), 0=UTP(100ohm)
+#define PHY_CFG1_RLVL0		0x0040	// 1=Rx Squelch level reduced by 4.5db
+#define PHY_CFG1_TLVL_SHIFT	2	// Transmit Output Level Adjust
+#define PHY_CFG1_TLVL_MASK	0x003C
+#define PHY_CFG1_TRF_MASK	0x0003	// Transmitter Rise/Fall time
+
+
+// PHY Configuration Register 2
+#define PHY_CFG2_REG		0x11
+#define PHY_CFG2_APOLDIS	0x0020	// 1=Auto Polarity Correction disabled
+#define PHY_CFG2_JABDIS		0x0010	// 1=Jabber disabled
+#define PHY_CFG2_MREG		0x0008	// 1=Multiple register access (MII mgt)
+#define PHY_CFG2_INTMDIO	0x0004	// 1=Interrupt signaled with MDIO pulseo
+
+// PHY Status Output (and Interrupt status) Register
+#define PHY_INT_REG		0x12	// Status Output (Interrupt Status)
+#define PHY_INT_INT		0x8000	// 1=bits have changed since last read
+#define PHY_INT_LNKFAIL		0x4000	// 1=Link Not detected
+#define PHY_INT_LOSSSYNC	0x2000	// 1=Descrambler has lost sync
+#define PHY_INT_CWRD		0x1000	// 1=Invalid 4B5B code detected on rx
+#define PHY_INT_SSD		0x0800	// 1=No Start Of Stream detected on rx
+#define PHY_INT_ESD		0x0400	// 1=No End Of Stream detected on rx
+#define PHY_INT_RPOL		0x0200	// 1=Reverse Polarity detected
+#define PHY_INT_JAB		0x0100	// 1=Jabber detected
+#define PHY_INT_SPDDET		0x0080	// 1=100Base-TX mode, 0=10Base-T mode
+#define PHY_INT_DPLXDET		0x0040	// 1=Device in Full Duplex
+
+// PHY Interrupt/Status Mask Register
+#define PHY_MASK_REG		0x13	// Interrupt Mask
+// Uses the same bit definitions as PHY_INT_REG
+
 // Interrupt Mask Register
 /* BANK 2 */
 #define IM_REG(smsc)		SMC_REG(smsc, 0x000D, 2)
@@ -293,6 +373,12 @@
 	} while (0)
 #endif
 
+#define SMC_SET_MAC_ADDR(smsc, addr)					\
+	do {								\
+		SMC_outw(addr[0]|(addr[1] << 8), ioaddr, ADDR0_REG(smsc)); \
+		SMC_outw(addr[2]|(addr[3] << 8), ioaddr, ADDR1_REG(smsc)); \
+		SMC_outw(addr[4]|(addr[5] << 8), ioaddr, ADDR2_REG(smsc)); \
+	} while (0)
 
 typedef unsigned int spinlock_t;
 
@@ -317,6 +403,12 @@ struct smc91x_platdata {
 	unsigned char ledb;
 };
 
+enum netdev_link_state {
+	NETDEV_STATE_NOCARRIER = 0,
+	NETDEV_LINK_STATE_PRESENT,
+};
+
+
 struct mii_if_info {
 	int phy_id;
 	int advertising;
@@ -327,7 +419,7 @@ struct mii_if_info {
 	unsigned int force_media : 1;	/* is autoneg. disabled? */
 	unsigned int supports_gmii : 1; /* are GMII registers supported? */
 
-	struct net_device *dev;
+	enum netdev_link_state link_state;
 	int (*mdio_read) (struct net_device *dev, int phy_id, int location);
 	void (*mdio_write) (struct net_device *dev, int phy_id, int location, int val);
 };
@@ -342,27 +434,22 @@ struct smc_local {
 
 	/* version/revision of the SMC91x chip */
 	int	version;
-//
-//	/* Contains the current active transmission mode */
-//	int	tcr_cur_mode;
-//
-//	/* Contains the current active receive mode */
-//	int	rcr_cur_mode;
-//
-//	/* Contains the current active receive/phy mode */
-//	int	rpc_cur_mode;
+
+	/* Contains the current active transmission mode */
+	int	tcr_cur_mode;
+
+	/* Contains the current active receive mode */
+	int	rcr_cur_mode;
+
+	/* Contains the current active receive/phy mode */
+	int	rpc_cur_mode;
 	int	ctl_rfduplx;
 	int	ctl_rspeed;
 
 	u32	msg_enable;
 	u32	phy_type;
 	struct mii_if_info mii;
-//
-//	/* work queue */
-//	struct work_struct phy_configure;
-//	struct net_device *dev;
-//	int	work_pending;
-//
+
 	spinlock_t lock;
 	u8 mac_addr[6];
 //
@@ -371,7 +458,7 @@ struct smc_local {
 //	u_long physaddr;
 //	struct device *device;
 //#endif
-	void __iomem *base;
+	paddr_t __iomem base;
 //	void __iomem *datacs;
 //
 

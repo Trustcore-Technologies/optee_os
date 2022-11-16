@@ -41,8 +41,9 @@ static inline bool bstgw_pktq_locked_is_empty(pktqueue_t *pq) {
 }
 
 static inline size_t bstgw_pktq_locked_bulk_add_buff(pktqueue_t *pq, bstgw_ethbuf_t **bs, size_t nbufs) {
-    assert(pq && bs);
-    int space_left = pq->capacity - pq->count;
+	int space_left;
+	assert(pq && bs);
+	space_left = pq->capacity - pq->count;
     int will_add = (nbufs <= space_left) ? nbufs : space_left;
     for(int i = 0; i < will_add; i++) {
         pq->pkt[pq->next_write] = bs[i];

@@ -47,22 +47,122 @@ static const char * chip_ids[ 16 ] =  {
 	NULL, NULL, NULL,
 	NULL, NULL, NULL};
 
-static TEE_Result init_eth();
-static TEE_Result smc_probe(void  *ioaddr);
-static void smc_reset();
-static void smc_phy_detect();
+static TEE_Result init_eth(void);
+static TEE_Result smc_probe(paddr_t ioaddr);
+static void smc_reset(void);
+static void smc_phy_detect(void);
 static void smc_phy_write(int phyaddr, int phyreg, int phydata);
 static int smc_phy_read(int phyaddr, int phyreg);
 static void smc_mii_out(unsigned int val, int bits);
 static unsigned int smc_mii_in(int bits);
+static int smc_open(void);
+static void smc_enable(void);
+static void smc_phy_configure(void);
+static int smc_phy_reset(int phy);
+static int smc_phy_fixed(void);
+static void smc_phy_check_media(int init);
+static void smc_10bt_check_media(int init);
+static unsigned int mii_check_media (struct mii_if_info *mii, unsigned int ok_to_print, unsigned int init_media);
+static int mii_link_ok (struct mii_if_info *mii);
+/**
+ * is_multicast_ether_addr - Determine if the Ethernet address is a multicast.
+ * @addr: Pointer to a six-byte array containing the Ethernet address
+ *
+ * Return true if the address is a multicast address.
+ * By definition the broadcast address is also a multicast address.
+ */
+static inline int is_multicast_ether_addr(const u8 *addr)
+{
+	return 0x01 & addr[0];
+}
+
+/**
+ * is_zero_ether_addr - Determine if give Ethernet address is all zeros.
+ * @addr: Pointer to a six-byte array containing the Ethernet address
+ *
+ * Return true if the address is all zeroes.
+ */
+static inline int is_zero_ether_addr(const u8 *addr)
+{
+	return !(addr[0] | addr[1] | addr[2] | addr[3] | addr[4] | addr[5]);
+}
+
+
+/**
+ * is_valid_ether_addr - Determine if the given Ethernet address is valid
+ * @addr: Pointer to a six-byte array containing the Ethernet address
+ *
+ * Check that the Ethernet address (MAC) is not 00:00:00:00:00:00, is not
+ * a multicast address, and is not FF:FF:FF:FF:FF:FF.
+ *
+ * Return true if the address is valid.
+ */
+static inline int is_valid_ether_addr(const u8 *addr)
+{
+	/* FF:FF:FF:FF:FF:FF is a multicast address so we don't need to
+	 * explicitly check for it here. */
+	return !is_multicast_ether_addr(addr) && !is_zero_ether_addr(addr);
+}
+
+/**
+ * mii_nway_result
+ * @negotiated: value of MII ANAR and'd with ANLPAR
+ *
+ * Given a set of MII abilities, check each bit and returns the
+ * currently supported media, in the priority order defined by
+ * IEEE 802.3u.  We use LPA_xxx constants but note this is not the
+ * value of LPA solely, as described above.
+ *
+ * The one exception to IEEE 802.3u is that 100baseT4 is placed
+ * between 100T-full and 100T-half.  If your phy does not support
+ * 100T4 this is fine.  If your phy places 100T4 elsewhere in the
+ * priority order, you will need to roll your own function.
+ */
+static inline unsigned int mii_nway_result (unsigned int negotiated)
+{
+	unsigned int ret;
+
+	if (negotiated & LPA_100FULL)
+		ret = LPA_100FULL;
+	else if (negotiated & LPA_100BASE4)
+		ret = LPA_100BASE4;
+	else if (negotiated & LPA_100HALF)
+		ret = LPA_100HALF;
+	else if (negotiated & LPA_10FULL)
+		ret = LPA_10FULL;
+	else
+		ret = LPA_10HALF;
+
+	return ret;
+}
+
+static inline int netif_carrier_ok(const struct mii_if_info *mii)
+{
+	if (mii->link_state == NETDEV_LINK_STATE_PRESENT)
+		return 1;
+	else
+		return 0;
+}
+
+static inline void netif_carrier_on(struct mii_if_info *mii)
+{
+	mii->link_state = NETDEV_LINK_STATE_PRESENT;
+}
+
+static inline void netif_carrier_off(struct mii_if_info *mii)
+{
+	mii->link_state = NETDEV_STATE_NOCARRIER;
+}
 
 static TEE_Result
 smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
-	EMSG("SMSC probe()");
-
+	int ret = 0;
+	size_t size = 0;
 	struct dt_node_info dt_smsc = {};
 	const struct platform_device_id *smsc_id_data;
-	int ret = 0;
+	paddr_t pa;
+
+	EMSG("SMSC probe()");
 
 	ret = bstgw_ethpool_init();
 
@@ -77,12 +177,11 @@ smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 
 	EMSG("SMSC device name: %s", smsc_id_data->name);
 
-	paddr_t pa = _fdt_reg_base_address(fdt, 1);
-	size_t size = 0;
+	pa = _fdt_reg_base_address(fdt, 1);
 
 	ret = dt_map_dev(fdt, dev, &pa, &size, DT_MAP_SECURE);
 
-	EMSG("SMSC device addr: %lx, %i %x", pa, ret, size);
+	EMSG("SMSC device addr: %lx, %i %lx", pa, ret, size);
 
 	smsc->cfg.flags |= (SMC_CAN_USE_8BIT)  ? SMC91X_USE_8BIT  : 0;
 	smsc->cfg.flags |= (SMC_CAN_USE_16BIT) ? SMC91X_USE_16BIT : 0;
@@ -93,13 +192,32 @@ smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 
 	ret = smc_probe(pa);
 
+	/*  FROM: atmel_wdt.c - interrupt configuration
+	 * 	it = dt_get_irq_type_prio(fdt, node, &irq_type, &irq_prio);
+	if (it == DT_INFO_INVALID_INTERRUPT)
+		goto err_free_wdt;
+
+	it_hdlr = itr_alloc_add_type_prio(it, &atmel_wdt_itr_cb, 0, wdt,
+					  irq_type, irq_prio);
+	if (!it_hdlr)
+		goto err_free_wdt;
+
+	if (dt_map_dev(fdt, node, &wdt->base, &size, DT_MAP_AUTO) < 0)
+		goto err_free_itr_handler;
+
+	wdt->mr = io_read32(wdt->base + WDT_MR) & WDT_MR_WDDIS;
+
+	atmel_wdt_init_hw(wdt);
+	itr_enable(it);
+	atmel_wdt_register_pm(wdt);
+	 */
 
 	init_eth();
 
 	return ret;
 }
 
-static TEE_Result smc_probe(void  *ioaddr)
+static TEE_Result smc_probe(paddr_t ioaddr)
 {
 	static int version_printed = 0;
 	int retval;
@@ -115,7 +233,7 @@ static TEE_Result smc_probe(void  *ioaddr)
 		if ((val & 0xFF) == 0x33) {
 			DMSG(
 				"%s: Detected possible byte-swapped interface"
-				" at IOADDR %p", CARDNAME, ioaddr);
+				" at IOADDR %lx", CARDNAME, ioaddr);
 		}
 		retval = -ENODEV;
 		goto err_out;
@@ -142,7 +260,7 @@ static TEE_Result smc_probe(void  *ioaddr)
 	val = SMC_GET_BASE(smsc);
 	val = ((val & 0x1F00) >> 3) << SMC_IO_SHIFT;
 	if (((unsigned long)ioaddr & (0x3e0 << SMC_IO_SHIFT)) != val) {
-		DMSG("%s: IOADDR %p doesn't match configuration (%x).",
+		DMSG("%s: IOADDR %lx doesn't match configuration (%x).",
 			CARDNAME, ioaddr, val);
 	}
 
@@ -157,7 +275,7 @@ static TEE_Result smc_probe(void  *ioaddr)
 	version_string = chip_ids[ (revision_register >> 4) & 0xF];
 	if (!version_string || (revision_register & 0xff00) != 0x3300) {
 		/* I don't recognize this chip, so... */
-		DMSG("%s: IO %p: Unrecognized revision register 0x%04x"
+		DMSG("%s: IO %lx: Unrecognized revision register 0x%04x"
 			", Contact author.", CARDNAME,
 			ioaddr, revision_register);
 
@@ -198,7 +316,8 @@ static TEE_Result smc_probe(void  *ioaddr)
 		smsc->ctl_rspeed = 100;
 	}
 
-	ret = irq_add(irq, ITRF_TRIGGER_LEVEL, &fep->handler);
+	// Open the device
+	smc_open();
 
 	return TEE_SUCCESS;
 
@@ -210,9 +329,9 @@ static TEE_Result smc_probe(void  *ioaddr)
 /*
  * this does a soft reset on the device
  */
-void smc_reset()
+void smc_reset(void)
 {
-	void __iomem * ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	unsigned int ctl, cfg;
 	struct sk_buff *pending_skb;
 
@@ -301,7 +420,7 @@ void smc_reset()
 /*
  * Finds and reports the PHY address
  */
-void smc_phy_detect()
+void smc_phy_detect(void)
 {
 	int phyaddr;
 
@@ -336,7 +455,7 @@ void smc_phy_detect()
  */
 int smc_phy_read(int phyaddr, int phyreg)
 {
-	void __iomem *ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	unsigned int phydata;
 
 	SMC_SELECT_BANK(smsc, 3);
@@ -365,7 +484,7 @@ int smc_phy_read(int phyaddr, int phyreg)
 void smc_phy_write(int phyaddr, int phyreg,
 			  int phydata)
 {
-	void __iomem *ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 
 	SMC_SELECT_BANK(smsc, 3);
 
@@ -387,7 +506,7 @@ void smc_phy_write(int phyaddr, int phyreg,
 
 void smc_mii_out(unsigned int val, int bits)
 {
-	void __iomem *ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	unsigned int mii_reg, mask;
 
 	mii_reg = SMC_GET_MII(smsc) & ~(MII_MCLK | MII_MDOE | MII_MDO);
@@ -408,7 +527,7 @@ void smc_mii_out(unsigned int val, int bits)
 
 unsigned int smc_mii_in(int bits)
 {
-	void __iomem *ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	unsigned int mii_reg, mask, val;
 
 	mii_reg = SMC_GET_MII(smsc) & ~(MII_MCLK | MII_MDOE | MII_MDO);
@@ -427,7 +546,388 @@ unsigned int smc_mii_in(int bits)
 	return val;
 }
 
-TEE_Result init_eth()
+
+/*
+ * Open and Initialize the board
+ *
+ * Set up everything, reset the card, etc..
+ */
+int smc_open(void)
+{
+	/*
+	 * Check that the address is valid.  If its not, refuse
+	 * to bring the device up.  The user must specify an
+	 * address using ifconfig eth0 hw ether xx:xx:xx:xx:xx:xx
+	 */
+	if (!is_valid_ether_addr(smsc->mac_addr)) {
+		EMSG("%s: no valid ethernet hw addr\n", __func__);
+		return -EINVAL;
+	}
+
+	/* Setup the default Register Modes */
+	smsc->tcr_cur_mode = TCR_DEFAULT;
+	smsc->rcr_cur_mode = RCR_DEFAULT;
+	smsc->rpc_cur_mode = RPC_DEFAULT |
+				smsc->cfg.leda << RPC_LSXA_SHFT |
+				smsc->cfg.ledb << RPC_LSXB_SHFT;
+
+	/*
+	 * If we are not using a MII interface, we need to
+	 * monitor our own carrier signal to detect faults.
+	 */
+	if (smsc->phy_type == 0)
+		smsc->tcr_cur_mode |= TCR_MON_CSN;
+
+	/* reset the hardware */
+	smc_reset();
+	smc_enable();
+
+	/* Configure the PHY, initialize the link state */
+	if (smsc->phy_type != 0)
+		smc_phy_configure();
+	else {
+		smc_10bt_check_media(1);
+	}
+
+	return 0;
+}
+
+
+/*
+ * Enable Interrupts, Receive, and Transmit
+ */
+void smc_enable(void)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	int mask;
+
+	/* see the header file for options in TCR/RCR DEFAULT */
+	SMC_SELECT_BANK(smsc, 0);
+	SMC_SET_TCR(lp, smsc->tcr_cur_mode);
+	SMC_SET_RCR(lp, smsc->rcr_cur_mode);
+
+	SMC_SELECT_BANK(smsc, 1);
+	SMC_SET_MAC_ADDR(smsc, smsc->mac_addr);
+
+	/* now, enable interrupts */
+	mask = IM_EPH_INT|IM_RX_OVRN_INT|IM_RCV_INT;
+	if (smsc->version >= (CHIP_91100 << 4))
+		mask |= IM_MDINT;
+	SMC_SELECT_BANK(smsc, 2);
+	SMC_SET_INT_MASK(smsc, mask);
+
+	/*
+	 * From this point the register bank must _NOT_ be switched away
+	 * to something else than bank 2 without proper locking against
+	 * races with any tasklet or interrupt handlers until smc_shutdown()
+	 * or smc_reset() is called.
+	 */
+}
+
+/*
+ * Configures the specified PHY through the MII management interface
+ * using Autonegotiation.
+ * Calls smc_phy_fixed() if the user has requested a certain config.
+ * If RPC ANEG bit is set, the media selection is dependent purely on
+ * the selection by the MII (either in the MII BMCR reg or the result
+ * of autonegotiation.)  If the RPC ANEG bit is cleared, the selection
+ * is controlled by the RPC SPEED and RPC DPLX bits.
+ */
+void smc_phy_configure(void)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	int phyaddr = smsc->mii.phy_id;
+	int my_phy_caps; /* My PHY capabilities */
+	int my_ad_caps; /* My Advertised capabilities */
+	int status;
+
+	/*
+	 * We should not be called if phy_type is zero.
+	 */
+	if (smsc->phy_type == 0)
+		goto smc_phy_configure_exit;
+
+	if (smc_phy_reset(phyaddr)) {
+		EMSG("%s: PHY reset timed out\n", __func__);
+		goto smc_phy_configure_exit;
+	}
+
+	/*
+	 * Enable PHY Interrupts (for register 18)
+	 * Interrupts listed here are disabled
+	 */
+	smc_phy_write(phyaddr, PHY_MASK_REG,
+		PHY_INT_LOSSSYNC | PHY_INT_CWRD | PHY_INT_SSD |
+		PHY_INT_ESD | PHY_INT_RPOL | PHY_INT_JAB |
+		PHY_INT_SPDDET | PHY_INT_DPLXDET);
+
+	/* Configure the Receive/Phy Control register */
+	SMC_SELECT_BANK(smsc, 0);
+	SMC_SET_RPC(smsc, smsc->rpc_cur_mode);
+
+	/* If the user requested no auto neg, then go set his request */
+	if (smsc->mii.force_media) {
+		smc_phy_fixed();
+		goto smc_phy_configure_exit;
+	}
+
+	/* Copy our capabilities from MII_BMSR to MII_ADVERTISE */
+	my_phy_caps = smc_phy_read(phyaddr, MII_BMSR);
+
+	if (!(my_phy_caps & BMSR_ANEGCAPABLE)) {
+		DMSG("Auto negotiation NOT supported\n");
+		smc_phy_fixed();
+		goto smc_phy_configure_exit;
+	}
+
+	my_ad_caps = ADVERTISE_CSMA; /* I am CSMA capable */
+
+	if (my_phy_caps & BMSR_100BASE4)
+		my_ad_caps |= ADVERTISE_100BASE4;
+	if (my_phy_caps & BMSR_100FULL)
+		my_ad_caps |= ADVERTISE_100FULL;
+	if (my_phy_caps & BMSR_100HALF)
+		my_ad_caps |= ADVERTISE_100HALF;
+	if (my_phy_caps & BMSR_10FULL)
+		my_ad_caps |= ADVERTISE_10FULL;
+	if (my_phy_caps & BMSR_10HALF)
+		my_ad_caps |= ADVERTISE_10HALF;
+
+	/* Disable capabilities not selected by our user */
+	if (smsc->ctl_rspeed != 100)
+		my_ad_caps &= ~(ADVERTISE_100BASE4|ADVERTISE_100FULL|ADVERTISE_100HALF);
+
+	if (!smsc->ctl_rfduplx)
+		my_ad_caps &= ~(ADVERTISE_100FULL|ADVERTISE_10FULL);
+
+	/* Update our Auto-Neg Advertisement Register */
+	smc_phy_write(phyaddr, MII_ADVERTISE, my_ad_caps);
+	smsc->mii.advertising = my_ad_caps;
+
+	/*
+	 * Read the register back.  Without this, it appears that when
+	 * auto-negotiation is restarted, sometimes it isn't ready and
+	 * the link does not come up.
+	 */
+	status = smc_phy_read(phyaddr, MII_ADVERTISE);
+	(void)status; /* suppress compile warning */
+
+	DMSG("phy caps=%x\n", my_phy_caps);
+	DMSG("phy advertised caps=%x\n", my_ad_caps);
+
+	/* Restart auto-negotiation process in order to advertise my caps */
+	smc_phy_write(phyaddr, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
+
+	smc_phy_check_media(1);
+
+smc_phy_configure_exit:
+	SMC_SELECT_BANK(smsc, 2);
+}
+
+
+/*
+ * smc_phy_reset - reset the phy
+ * @dev: net device
+ * @phy: phy address
+ *
+ * Issue a software reset for the specified PHY and
+ * wait up to 100ms for the reset to complete.  We should
+ * not access the PHY for 50ms after issuing the reset.
+ *
+ * The time to wait appears to be dependent on the PHY.
+ *
+ * Must be called with lp->lock locked.
+ */
+int smc_phy_reset(int phy)
+{
+	unsigned int bmcr;
+	int timeout;
+
+	smc_phy_write(phy, MII_BMCR, BMCR_RESET);
+
+	for (timeout = 2; timeout; timeout--) {
+		mdelay(50);
+		bmcr = smc_phy_read(phy, MII_BMCR);
+		if (!(bmcr & BMCR_RESET))
+			break;
+	}
+
+	return bmcr & BMCR_RESET;
+}
+
+/*
+ * Sets the PHY to a configuration as determined by the user
+ */
+static int smc_phy_fixed(void)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	int phyaddr = smsc->mii.phy_id;
+	int bmcr, cfg1;
+
+	/* Enter Link Disable state */
+	cfg1 = smc_phy_read(phyaddr, PHY_CFG1_REG);
+	cfg1 |= PHY_CFG1_LNKDIS;
+	smc_phy_write(phyaddr, PHY_CFG1_REG, cfg1);
+
+	/*
+	 * Set our fixed capabilities
+	 * Disable auto-negotiation
+	 */
+	bmcr = 0;
+
+	if (smsc->ctl_rfduplx)
+		bmcr |= BMCR_FULLDPLX;
+
+	if (smsc->ctl_rspeed == 100)
+		bmcr |= BMCR_SPEED100;
+
+	/* Write our capabilities to the phy control register */
+	smc_phy_write(phyaddr, MII_BMCR, bmcr);
+
+	/* Re-Configure the Receive/Phy Control register */
+	SMC_SELECT_BANK(smsc, 0);
+	SMC_SET_RPC(smsc, smsc->rpc_cur_mode);
+	SMC_SELECT_BANK(smsc, 2);
+
+	return 1;
+}
+
+
+/*
+ * smc_phy_check_media - check the media status and adjust TCR
+ * @dev: net device
+ * @init: set true for initialisation
+ *
+ * Select duplex mode depending on negotiation state.  This
+ * also updates our carrier state.
+ */
+static void smc_phy_check_media(int init)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+
+	if (mii_check_media(&smsc->mii, netif_msg_link(smsc), init)) {
+		/* duplex state has changed */
+		if (smsc->mii.full_duplex) {
+			smsc->tcr_cur_mode |= TCR_SWFDUP;
+		} else {
+			smsc->tcr_cur_mode &= ~TCR_SWFDUP;
+		}
+
+		SMC_SELECT_BANK(smsc, 0);
+		SMC_SET_TCR(smsc, smsc->tcr_cur_mode);
+	}
+}
+
+
+void smc_10bt_check_media(int init)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	unsigned int new_carrier;
+
+	SMC_SELECT_BANK(smsc, 0);
+	new_carrier = (SMC_GET_EPH_STATUS(smsc) & ES_LINK_OK) ? 1 : 0;
+	SMC_SELECT_BANK(smsc, 2);
+
+	if (init) {
+		DMSG("link %s\n", new_carrier ? "up" : "down");
+	}
+}
+
+
+/**
+ * mii_check_media - check the MII interface for a duplex change
+ * @mii: the MII interface
+ * @ok_to_print: OK to print link up/down messages
+ * @init_media: OK to save duplex mode in @mii
+ *
+ * Returns 1 if the duplex mode changed, 0 if not.
+ * If the media type is forced, always returns 0.
+ */
+unsigned int mii_check_media (struct mii_if_info *mii,
+			      unsigned int ok_to_print,
+			      unsigned int init_media)
+{
+	unsigned int old_carrier, new_carrier;
+	int advertise, lpa, media, duplex;
+	int lpa2 = 0;
+
+	/* if forced media, go no further */
+	if (mii->force_media)
+		return 0; /* duplex did not change */
+
+	/* check current and old link status */
+	old_carrier = netif_carrier_ok(mii) ? 1 : 0;
+	new_carrier = (unsigned int) mii_link_ok(mii);
+
+	/* if carrier state did not change, this is a "bounce",
+	 * just exit as everything is already set correctly
+	 */
+	if ((!init_media) && (old_carrier == new_carrier))
+		return 0; /* duplex did not change */
+
+	/* no carrier, nothing much to do */
+	if (!new_carrier) {
+		netif_carrier_off(mii);
+		if (ok_to_print)
+			EMSG("%s: link down\n", CARDNAME);
+		return 0; /* duplex did not change */
+	}
+
+	/*
+	 * we have carrier, see who's on the other end
+	 */
+	netif_carrier_on(mii);
+
+	/* get MII advertise and LPA values */
+	if ((!init_media) && (mii->advertising))
+		advertise = mii->advertising;
+	else {
+		advertise = smc_phy_read(mii->phy_id, MII_ADVERTISE);
+		mii->advertising = advertise;
+	}
+	lpa = smc_phy_read(mii->phy_id, MII_LPA);
+	if (mii->supports_gmii)
+		lpa2 = smc_phy_read(mii->phy_id, MII_STAT1000);
+
+	/* figure out media and duplex from advertise and LPA values */
+	media = mii_nway_result(lpa & advertise);
+	duplex = (media & ADVERTISE_FULL) ? 1 : 0;
+	if (lpa2 & LPA_1000FULL)
+		duplex = 1;
+
+	if (ok_to_print)
+		EMSG("%s: link up, %sMbps, %s-duplex, lpa 0x%04X\n",
+			   CARDNAME,
+		       lpa2 & (LPA_1000FULL | LPA_1000HALF) ? "1000" :
+		       media & (ADVERTISE_100FULL | ADVERTISE_100HALF) ? "100" : "10",
+		       duplex ? "full" : "half",
+		       lpa);
+
+
+	if ((init_media) || (mii->full_duplex != duplex)) {
+		mii->full_duplex = duplex;
+		return 1; /* duplex changed */
+	}
+
+	return 0; /* duplex did not change */
+}
+
+/**
+ * mii_link_ok - is link status up/ok
+ * @mii: the MII interface
+ *
+ * Returns 1 if the MII reports link status up/ok, 0 otherwise.
+ */
+int mii_link_ok (struct mii_if_info *mii)
+{
+	/* first, a dummy read, needed to latch some MII phys */
+	smc_phy_read(mii->phy_id, MII_BMSR);
+	if (smc_phy_read(mii->phy_id, MII_BMSR) & BMSR_LSTATUS)
+		return 1;
+	return 0;
+}
+
+TEE_Result init_eth(void)
 {
 	return TEE_SUCCESS;
 }
