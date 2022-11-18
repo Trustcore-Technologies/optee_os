@@ -9,9 +9,11 @@
 
 #define TA_UUID         TA_TRUSTCORE_UUID
 
-uint32_t trustcore_smc_handler(uint64_t arg1, uint64_t arg2, uint64_t arg3)
+uint32_t trustcore_smc_handler(uint8_t sub_id, uint64_t arg1,
+                               uint64_t arg2, uint64_t arg3)
 {
     EMSG("Trustcore args in pta");
+    EMSG("subid %d", sub_id);
     EMSG("arg1 0x%"PRIx64, arg1);
     EMSG("arg2 0x%"PRIx64, arg2);
     EMSG("arg3 0x%"PRIx64, arg3);
