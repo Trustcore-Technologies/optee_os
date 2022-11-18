@@ -26,6 +26,62 @@
 # define SMC_NOWAIT		0
 #endif
 
+/*
+ * Wait time for memory to be free.  This probably shouldn't be
+ * tuned that much, as waiting for this means nothing else happens
+ * in the system
+ */
+#define MEMORY_WAIT_TIME	16
+
+
+/* this enables an interrupt in the interrupt mask register */
+#define SMC_ENABLE_INT(smsc, x) do {					\
+	unsigned char mask;						\
+	mask = SMC_GET_INT_MASK(smsc);					\
+	mask |= (x);							\
+	SMC_SET_INT_MASK(smsc, mask);					\
+} while (0)
+
+/* this disables an interrupt from the interrupt mask register */
+#define SMC_DISABLE_INT(smsc, x) do {					\
+	unsigned char mask;						\
+	mask = SMC_GET_INT_MASK(smsc);					\
+	mask &= ~(x);							\
+	SMC_SET_INT_MASK(smsc, mask);					\
+} while (0)
+
+#if SMC_DEBUG > 3
+static void PRINT_PKT(u_char *buf, int length)
+{
+	int i;
+	int remainder;
+	int lines;
+
+	lines = length / 16;
+	remainder = length % 16;
+
+	for (i = 0; i < lines ; i ++) {
+		int cur;
+		for (cur = 0; cur < 8; cur++) {
+			u_char a, b;
+			a = *buf++;
+			b = *buf++;
+			printk("%02x%02x ", a, b);
+		}
+		printk("\n");
+	}
+	for (i = 0; i < remainder/2 ; i++) {
+		u_char a, b;
+		a = *buf++;
+		b = *buf++;
+		printk("%02x%02x ", a, b);
+	}
+	printk("\n");
+}
+#else
+#define PRINT_PKT(x...)  do { } while(0)
+#endif
+
 struct platform_device_id {
     char name[20];
     unsigned long driver_data;
@@ -64,6 +120,9 @@ static void smc_phy_check_media(int init);
 static void smc_10bt_check_media(int init);
 static unsigned int mii_check_media (struct mii_if_info *mii, unsigned int ok_to_print, unsigned int init_media);
 static int mii_link_ok (struct mii_if_info *mii);
+//static int smc_hard_start_xmit(struct sk_buff *skb);
+static void smc_hardware_send_pkt(void);
+
 /**
  * is_multicast_ether_addr - Determine if the Ethernet address is a multicast.
  * @addr: Pointer to a six-byte array containing the Ethernet address
@@ -154,6 +213,86 @@ static inline void netif_carrier_off(struct mii_if_info *mii)
 	mii->link_state = NETDEV_STATE_NOCARRIER;
 }
 
+
+static inline void io_read8s(volatile uintptr_t addr, void *buffer, int len)
+{
+	if (len) {
+		u8 *buf = buffer;
+		do {
+			u8 x = io_read8((uintptr_t)addr);
+			*buf++ = x;
+		} while (--len);
+	}
+}
+
+static inline void io_read16s(volatile uintptr_t addr, void *buffer, int len)
+{
+	if (len) {
+		u16 *buf = buffer;
+		do {
+			u16 x = io_read16((uintptr_t)addr);
+			*buf++ = x;
+		} while (--len);
+	}
+}
+
+static inline void io_read32s(volatile uintptr_t addr, void *buffer, int len)
+{
+	if (len) {
+		u32 *buf = buffer;
+		do {
+			u32 x = io_read32((uintptr_t)addr);
+			*buf++ = x;
+		} while (--len);
+	}
+}
+
+static inline void io_write8s(volatile uintptr_t addr, const void *buffer, int len)
+{
+	if (len) {
+		const u8 *buf = buffer;
+		do {
+			io_write8(*buf++, (uintptr_t)addr);
+		} while (--len);
+	}
+}
+
+static inline void io_write16s(volatile uintptr_t addr, const void *buffer, int len)
+{
+	if (len) {
+		const u16 *buf = buffer;
+		do {
+			io_write16(*buf++, (uintptr_t)addr);
+		} while (--len);
+	}
+}
+
+static inline void io_write32s(volatile uintptr_t addr, const void *buffer, int len)
+{
+	if (len) {
+		const u32 *buf = buffer;
+		do {
+			io_write32(*buf++, (uintptr_t)addr);
+		} while (--len);
+	}
+}
+
+static enum itr_return smsc91x_itr_cb(struct itr_handler *h)
+{
+	//struct atmel_wdt *wdt = h->data;
+	//uint32_t sr = io_read32(wdt->base + WDT_SR);
+
+	(void)h;
+	//if (sr & WDT_SR_DUNF)
+		DMSG("SMSC IRQ!!!!!");
+	//if (sr & WDT_SR_DERR)
+		//DMSG("Watchdog Error !");
+
+	//panic("Watchdog interrupt");
+
+	return ITRR_HANDLED;
+}
+
 static TEE_Result
 smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 	int ret = 0;
@@ -161,6 +300,10 @@ smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 	struct dt_node_info dt_smsc = {};
 	const struct platform_device_id *smsc_id_data;
 	paddr_t pa;
+	int irq = DT_INFO_INVALID_INTERRUPT;
+	uint32_t irq_type = 0;
+	uint32_t irq_prio = 0;
+	struct itr_handler *it_hdlr;
 
 	EMSG("SMSC probe()");
 
@@ -192,25 +335,20 @@ smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 
 	ret = smc_probe(pa);
 
-	/*  FROM: atmel_wdt.c - interrupt configuration
-	 * 	it = dt_get_irq_type_prio(fdt, node, &irq_type, &irq_prio);
-	if (it == DT_INFO_INVALID_INTERRUPT)
-		goto err_free_wdt;
+	irq = dt_get_irq_type_prio(fdt, dev, &irq_type, &irq_prio);
+	if (irq == DT_INFO_INVALID_INTERRUPT)
+		EMSG("Failed to obtain IRQ");
+	else
+		EMSG("IRQ = %i type = %u prio = %u", irq, irq_type, irq_prio);
 
-	it_hdlr = itr_alloc_add_type_prio(it, &atmel_wdt_itr_cb, 0, wdt,
+
+	it_hdlr = itr_alloc_add_type_prio(irq, &smsc91x_itr_cb, 0, smsc,
 					  irq_type, irq_prio);
+
 	if (!it_hdlr)
-		goto err_free_wdt;
+		EMSG("IRQ regiustration failed!");
 
-	if (dt_map_dev(fdt, node, &wdt->base, &size, DT_MAP_AUTO) < 0)
-		goto err_free_itr_handler;
-
-	wdt->mr = io_read32(wdt->base + WDT_MR) & WDT_MR_WDDIS;
-
-	atmel_wdt_init_hw(wdt);
-	itr_enable(it);
-	atmel_wdt_register_pm(wdt);
-	 */
+	itr_enable(irq);
 
 	init_eth();
 
@@ -925,6 +1063,133 @@ int mii_link_ok (struct mii_if_info *mii)
 	if (smc_phy_read(mii->phy_id, MII_BMSR) & BMSR_LSTATUS)
 		return 1;
 	return 0;
+}
+
+
+/*
+ * Since I am not sure if I will have enough room in the chip's ram
+ * to store the packet, I call this routine which either sends it
+ * now, or set the card to generates an interrupt when ready
+ * for the packet.
+ */
+int smc_hard_start_xmit(struct sk_buff *skb)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	unsigned int numPages, poll_count, status;
+	/*
+	 * The MMU wants the number of pages to be the number of 256 bytes
+	 * 'pages', minus 1 (since a packet can't ever have 0 pages :))
+	 *
+	 * The 91C111 ignores the size bits, but earlier models don't.
+	 *
+	 * Pkt size for allocating is data length +6 (for additional status
+	 * words, length and ctl)
+	 *
+	 * If odd size then last byte is included in ctl word.
+	 */
+	numPages = ((skb->eth_buf.data_len & ~1) + (6 - 1)) >> 8;
+	if (unlikely(numPages > 7)) {
+		EMSG("%s: Far too big packet error.\n", CARDNAME);
+		dev_kfree_skb(skb);
+		return 0;
+	}
+
+	//smc_special_lock(&lp->lock, flags);
+
+	/* now, try to allocate the memory */
+	SMC_SET_MMU_CMD(smsc, MC_ALLOC | numPages);
+
+	/*
+	 * Poll the chip for a short amount of time in case the
+	 * allocation succeeds quickly.
+	 */
+	poll_count = MEMORY_WAIT_TIME;
+	do {
+		status = SMC_GET_INT(smsc);
+		if (status & IM_ALLOC_INT) {
+			SMC_ACK_INT(smsc, IM_ALLOC_INT);
+  			break;
+		}
+   	} while (--poll_count);
+
+	//smc_special_unlock(&lp->lock, flags);
+
+	smsc->pending_tx_skb = skb;
+   	if (!poll_count) {
+		/* oh well, wait until the chip finds memory later */
+   		EMSG("%s: TX memory allocation deferred.\n", CARDNAME);
+		SMC_ENABLE_INT(smsc, IM_ALLOC_INT);
+   	} else {
+		/*
+		 * Allocation succeeded: push packet to the chip's own memory
+		 * immediately.
+		 */
+		smc_hardware_send_pkt();
+	}
+
+	return 0;
+}
+
+/*
+ * This is called to actually send a packet to the chip.
+ */
+void smc_hardware_send_pkt(void)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	struct sk_buff *skb;
+	unsigned int packet_no, len;
+	unsigned char *buf;
+
+//	if (!smc_special_trylock(&lp->lock, flags)) {
+//		netif_stop_queue(dev);
+//		tasklet_schedule(&lp->tx_task);
+//		return;
+//	}
+
+	skb = smsc->pending_tx_skb;
+	if (unlikely(!skb)) {
+		//smc_special_unlock(&lp->lock, flags);
+		return;
+	}
+	smsc->pending_tx_skb = NULL;
+
+	packet_no = SMC_GET_AR(smsc);
+	if (unlikely(packet_no & AR_FAILED)) {
+		EMSG("%s: Memory allocation failed.\n", CARDNAME);
+//		smc_special_unlock(&lp->lock, flags);
+		goto done;
+	}
+
+	/* point to the beginning of the packet */
+	SMC_SET_PN(smsc, packet_no);
+	SMC_SET_PTR(smsc, PTR_AUTOINC);
+
+	buf = (unsigned char *) skb_data(skb);
+	len = skb->eth_buf.data_len;
+	DMSG("%s: TX PNR 0x%x LENGTH 0x%04x (%d) BUF 0x%p\n",
+			CARDNAME, packet_no, len, len, buf);
+	PRINT_PKT(buf, len);
+
+	/*
+	 * Send the packet length (+6 for status words, length, and ctl.
+	 * The card will pad to 64 bytes with zeroes if packet is too small.
+	 */
+	SMC_PUT_PKT_HDR(smsc, 0, len + 6);
+
+	/* send the actual data */
+	SMC_PUSH_DATA(smsc, buf, len & ~1);
+
+	/* Send final ctl word with the last byte if there is one */
+	SMC_outw(((len & 1) ? (0x2000 | buf[len-1]) : 0), ioaddr, DATA_REG(smsc));
+
+	/* queue the packet for TX */
+	SMC_SET_MMU_CMD(smsc, MC_ENQUEUE);
+	//smc_special_unlock(&lp->lock, flags);
+
+	SMC_ENABLE_INT(smsc, IM_TX_INT | IM_TX_EMPTY_INT);
+
+done:
+	dev_kfree_skb(skb);
 }
 
 TEE_Result init_eth(void)

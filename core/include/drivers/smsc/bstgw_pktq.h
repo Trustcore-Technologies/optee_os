@@ -41,10 +41,10 @@ static inline bool bstgw_pktq_locked_is_empty(pktqueue_t *pq) {
 }
 
 static inline size_t bstgw_pktq_locked_bulk_add_buff(pktqueue_t *pq, bstgw_ethbuf_t **bs, size_t nbufs) {
-	int space_left;
+	int space_left, will_add;
 	assert(pq && bs);
 	space_left = pq->capacity - pq->count;
-    int will_add = (nbufs <= space_left) ? nbufs : space_left;
+    will_add = ((int)nbufs <= space_left) ? (int)nbufs : space_left;
     for(int i = 0; i < will_add; i++) {
         pq->pkt[pq->next_write] = bs[i];
         pq->next_write++;
@@ -80,9 +80,10 @@ static inline bool bstgw_pktq_locked_drop_bufs(pktqueue_t *pq, size_t num) {
  * during reading.
  */
 static inline size_t bstgw_pktq_locked_contig_bufs(pktqueue_t *pq) {
+    size_t till_end;
     assert(pq);
     if(__predict_false( bstgw_pktq_locked_is_empty(pq) )) return 0;
-    size_t till_end = 1 + ((pq->capacity - 1) - pq->next_read);
+    till_end = 1 + ((pq->capacity - 1) - pq->next_read);
     if (till_end > pq->count) return pq->count;
     return till_end;
 }

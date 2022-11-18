@@ -30,6 +30,8 @@
 
 #define CARDNAME "smc91x"
 
+#define SMC_DEBUG 0
+
 #define CHIP_9192	3
 #define CHIP_9194	4
 #define CHIP_9195	5
@@ -40,6 +42,10 @@
 
 #define NETIF_MSG_LINK	0
 #define	netif_msg_link(x)		0
+
+#ifndef SMC_CAN_USE_DATACS
+#define SMC_CAN_USE_DATACS	0
+#endif
 
 #define SMC_REG(smsc, reg, bank)	(reg<<SMC_IO_SHIFT)
 
@@ -190,11 +196,13 @@
 #define SMC_outb(v, a, r)	io_write8((uintptr_t)(a) + (uintptr_t)(r), v)
 #define SMC_outw(v, a, r)	io_write16((uintptr_t)(a) + (uintptr_t)(r), v)
 #define SMC_outl(v, a, r)	io_write32((uintptr_t)(a) + (uintptr_t)(r), v)
-//#define SMC_insw(a, r, p, l)	readsw((a) + (r), p, l)
-//#define SMC_outsw(a, r, p, l)	writesw((a) + (r), p, l)
-//#define SMC_insl(a, r, p, l)	readsl((a) + (r), p, l)
-//#define SMC_outsl(a, r, p, l)	writesl((a) + (r), p, l)
 
+#define SMC_insb(a, r, p, l)	io_read8s((uintptr_t)(a) + (uintptr_t)(r), p, l)
+#define SMC_outsb(a, r, p, l)	io_write8s((uintptr_t)(a) + (uintptr_t)(r), p, l)
+#define SMC_insw(a, r, p, l)	io_read16s((uintptr_t)(a) + (uintptr_t)(r), p, l)
+#define SMC_outsw(a, r, p, l)	io_write16s((uintptr_t)(a) + (uintptr_t)(r), p, l)
+#define SMC_insl(a, r, p, l)	io_read32s((uintptr_t)(a) + (uintptr_t)(r), p, l)
+#define SMC_outsl(a, r, p, l)	io_write32s((uintptr_t)(a) + (uintptr_t)(r), p, l)
 
 #define SMC_IO_SHIFT		(smsc->io_shift)
 
@@ -253,19 +261,19 @@
 
 #define SMC_GET_MII(smsc)		SMC_inw(ioaddr, MII_REG(smsc))
 
-#define SMC_SET_RPC(lp, x)						\
+#define SMC_SET_RPC(smsc, x)						\
 	do {								\
-		if (SMC_MUST_ALIGN_WRITE(lp))				\
-			SMC_outl((x)<<16, ioaddr, SMC_REG(lp, 8, 0));	\
+		if (SMC_MUST_ALIGN_WRITE(smsc))				\
+			SMC_outl((x)<<16, ioaddr, SMC_REG(smsc, 8, 0));	\
 		else							\
-			SMC_outw(x, ioaddr, RPC_REG(lp));		\
+			SMC_outw(x, ioaddr, RPC_REG(smsc));		\
 	} while (0)
 
-#define SMC_GET_EPH_STATUS(lp)	SMC_inw(ioaddr, EPH_STATUS_REG(lp))
+#define SMC_GET_EPH_STATUS(smsc)	SMC_inw(ioaddr, EPH_STATUS_REG(smsc))
 
 // EPH Status Register
 /* BANK 0  */
-#define EPH_STATUS_REG(lp)	SMC_REG(lp, 0x0002, 0)
+#define EPH_STATUS_REG(smsc)	SMC_REG(smsc, 0x0002, 0)
 #define ES_TX_SUC	0x0001	// Last TX was successful
 #define ES_SNGL_COL	0x0002	// Single collision detected for last tx
 #define ES_MUL_COL	0x0004	// Multiple collisions detected for last tx
@@ -335,7 +343,7 @@
 
 // Management Interface Register (MII)
 /* BANK 3 */
-#define MII_REG(lp)		SMC_REG(lp, 0x0008, 3)
+#define MII_REG(smsc)		SMC_REG(smsc, 0x0008, 3)
 #define MII_MSK_CRS100	0x4000 // Disables CRS100 detection during tx half dup
 #define MII_MDOE	0x0008 // MII Output Enable
 #define MII_MCLK	0x0004 // MII Clock, pin MDCLK
@@ -353,6 +361,76 @@
 		else							\
 			SMC_outw((x) << 8, ioaddr, INT_REG(smsc));	\
 	} while (0)
+
+#define SMC_GET_INT(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, INT_REG(smsc)))	\
+				: (SMC_inw(ioaddr, INT_REG(smsc)) & 0xFF))
+
+#define SMC_ACK_INT(smsc, x)						\
+	do {								\
+		if (SMC_8BIT(smsc))					\
+			SMC_outb(x, ioaddr, INT_REG(smsc));		\
+		else {							\
+			int __mask;					\
+			__mask = SMC_inw(ioaddr, INT_REG(smsc)) & ~0xff; \
+			SMC_outw(__mask | (x), ioaddr, INT_REG(smsc));	\
+		}							\
+	} while (0)
+
+#define SMC_GET_INT_MASK(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, IM_REG(smsc)))	\
+				: (SMC_inw(ioaddr, INT_REG(smsc)) >> 8))
+
+#define SMC_SET_INT_MASK(smsc, x)					\
+	do {								\
+		if (SMC_8BIT(smsc))					\
+			SMC_outb(x, ioaddr, IM_REG(smsc));		\
+		else							\
+			SMC_outw((x) << 8, ioaddr, INT_REG(smsc));	\
+	} while (0)
+
+#define SMC_GET_AR(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, AR_REG(smsc)))	\
+				: (SMC_inw(ioaddr, PN_REG(smsc)) >> 8))
+
+// Allocation Result Register
+/* BANK 2 */
+#define AR_REG(smsc)		SMC_REG(smsc, 0x0003, 2)
+#define AR_FAILED	0x80	// Alocation Failed
+
+// Data Register
+/* BANK 2 */
+#define DATA_REG(smsc)	SMC_REG(smsc, 0x0008, 2)
+
+// Packet Number Register
+/* BANK 2 */
+#define PN_REG(smsc)		SMC_REG(smsc, 0x0002, 2)
+
+#define SMC_GET_PN(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, PN_REG(smsc)))	\
+				: (SMC_inw(ioaddr, PN_REG(smsc)) & 0xFF))
+
+#define SMC_SET_PN(smsc, x)						\
+	do {								\
+		if (SMC_MUST_ALIGN_WRITE(smsc))				\
+			SMC_outl((x)<<16, ioaddr, SMC_REG(smsc, 0, 2));	\
+		else if (SMC_8BIT(smsc))				\
+			SMC_outb(x, ioaddr, PN_REG(smsc));		\
+		else							\
+			SMC_outw(x, ioaddr, PN_REG(smsc));		\
+	} while (0)
+
+// TX FIFO Ports Register
+/* BANK 2 */
+#define TXFIFO_REG(smsc)	SMC_REG(smsc, 0x0004, 2)
+#define TXFIFO_TEMPTY	0x80	// TX FIFO Empty
+
+// Pointer Register
+/* BANK 2 */
+#define PTR_REG(smsc)		SMC_REG(smsc, 0x0006, 2)
+#define PTR_RCV		0x8000 // 1=Receive area, 0=Transmit area
+#define PTR_AUTOINC 	0x4000 // Auto increment the pointer on each access
+#define PTR_READ	0x2000 // When 1 the operation is a read
 
 // Individual Address Registers
 /* BANK 1 */
@@ -378,6 +456,63 @@
 		SMC_outw(addr[0]|(addr[1] << 8), ioaddr, ADDR0_REG(smsc)); \
 		SMC_outw(addr[2]|(addr[3] << 8), ioaddr, ADDR1_REG(smsc)); \
 		SMC_outw(addr[4]|(addr[5] << 8), ioaddr, ADDR2_REG(smsc)); \
+	} while (0)
+
+#define SMC_PUT_PKT_HDR(smsc, status, length)				\
+	do {								\
+		if (SMC_32BIT(smsc))					\
+			SMC_outl((status) | (length)<<16, ioaddr,	\
+				 DATA_REG(smsc));			\
+		else {							\
+			SMC_outw(status, ioaddr, DATA_REG(smsc));	\
+			SMC_outw(length, ioaddr, DATA_REG(smsc));	\
+		}							\
+	} while (0)
+
+#define SMC_GET_PKT_HDR(smsc, status, length)				\
+	do {								\
+		if (SMC_32BIT(smsc)) {				\
+			unsigned int __val = SMC_inl(ioaddr, DATA_REG(smsc)); \
+			(status) = __val & 0xffff;			\
+			(length) = __val >> 16;				\
+		} else {						\
+			(status) = SMC_inw(ioaddr, DATA_REG(smsc));	\
+			(length) = SMC_inw(ioaddr, DATA_REG(smsc));	\
+		}							\
+	} while (0)
+
+#define SMC_PUSH_DATA(smsc, p, l)					\
+	do {								\
+		if (SMC_32BIT(smsc)) {				\
+			uintptr_t __ptr = (uintptr_t)(p);				\
+			int __len = (l);				\
+			paddr_t __iomem __ioaddr = ioaddr;		\
+			if (__len >= 2 && (unsigned long)__ptr & 2) {	\
+				__len -= 2;				\
+				SMC_outw(*(u16 *)__ptr, ioaddr,		\
+					DATA_REG(smsc));		\
+				__ptr += 2;				\
+			}						\
+			if (SMC_CAN_USE_DATACS && smsc->datacs)		\
+				__ioaddr = smsc->datacs;			\
+			SMC_outsl(__ioaddr, DATA_REG(smsc), (const void *)__ptr, __len>>2); \
+			if (__len & 2) {				\
+				__ptr += (__len & ~3);			\
+				SMC_outw(*((u16 *)__ptr), ioaddr,	\
+					 DATA_REG(smsc));		\
+			}						\
+		} else if (SMC_16BIT(smsc))				\
+			SMC_outsw(ioaddr, DATA_REG(smsc), p, (l) >> 1);	\
+		else if (SMC_8BIT(smsc))				\
+			SMC_outsb(ioaddr, DATA_REG(smsc), p, l);	\
+	} while (0)
+
+#define SMC_SET_PTR(smsc, x)						\
+	do {								\
+		if (SMC_MUST_ALIGN_WRITE(smsc))				\
+			SMC_outl((x)<<16, ioaddr, SMC_REG(smsc, 4, 2));	\
+		else							\
+			SMC_outw(x, ioaddr, PTR_REG(smsc));		\
 	} while (0)
 
 typedef unsigned int spinlock_t;
@@ -420,8 +555,6 @@ struct mii_if_info {
 	unsigned int supports_gmii : 1; /* are GMII registers supported? */
 
 	enum netdev_link_state link_state;
-	int (*mdio_read) (struct net_device *dev, int phy_id, int location);
-	void (*mdio_write) (struct net_device *dev, int phy_id, int location, int val);
 };
 
 struct smc_local {
@@ -459,7 +592,7 @@ struct smc_local {
 //	struct device *device;
 //#endif
 	paddr_t __iomem base;
-//	void __iomem *datacs;
+	paddr_t __iomem datacs;
 //
 
 	/* the low address lines on some platforms aren't connected... */
@@ -470,5 +603,7 @@ struct smc_local {
 	struct smc91x_platdata cfg;
 };
 
+
+int smc_hard_start_xmit(struct sk_buff *skb);
 
 #endif /* SMC91X_H_ */
