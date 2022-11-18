@@ -284,8 +284,8 @@ static uint32_t std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2,
 	case OPTEE_SMC_CALL_WITH_REGD_ARG:
 		return std_entry_with_regd_arg(reg_pair_to_64(a1, a2), a3);
 	default:
-                if((a0 & (~0xFFu)) == TRUSTCORE_SMC_CALL_WITH_REGD_ARG) {
-		    return trustcore_smc_handler((a0 & 0xFF), a1, a2, a3);
+                if(CHECK_IF_TRUSTCORE_SMC(a0)) {
+		    return trustcore_smc_handler(EXTRACT_TRUSTCORE_SUBID_FROM_SMCID(0), a1, a2, a3);
                 }
 		EMSG("Unknown SMC 0x%"PRIx32, a0);
 		return OPTEE_SMC_RETURN_EBADCMD;
