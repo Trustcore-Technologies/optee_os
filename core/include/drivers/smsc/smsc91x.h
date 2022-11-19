@@ -53,6 +53,9 @@
 /* BANK 1 */
 #define BASE_REG(smsc)	SMC_REG(smsc, 0x0002, 1)
 
+// Memory Information Register
+/* BANK 0  */
+#define MIR_REG(smsc)		SMC_REG(smsc, 0x0008, 0)
 
 // Receive Control Register
 /* BANK 0  */
@@ -139,6 +142,29 @@
 #define MC_ENQUEUE	(6<<5)	// Enqueue the packet for transmit
 #define MC_RSTTXFIFO	(7<<5)	// Reset the TX FIFOs
 
+
+/*
+ . Receive status bits
+*/
+#define RS_ALGNERR	0x8000
+#define RS_BRODCAST	0x4000
+#define RS_BADCRC	0x2000
+#define RS_ODDFRAME	0x1000
+#define RS_TOOLONG	0x0800
+#define RS_TOOSHORT	0x0400
+#define RS_MULTICAST	0x0001
+#define RS_ERRORS	(RS_ALGNERR | RS_BADCRC | RS_TOOLONG | RS_TOOSHORT)
+
+// RX FIFO Ports Register
+/* BANK 2 */
+#define RXFIFO_REG(smsc)	SMC_REG(smsc, 0x0005, 2)
+#define RXFIFO_REMPTY	0x80	// RX FIFO Empty
+
+#define FIFO_REG(smsc)	SMC_REG(smsc, 0x0004, 2)
+
+#define SMC_GET_RXFIFO(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, RXFIFO_REG(smsc)))	\
+				: (SMC_inw(ioaddr, TXFIFO_REG(smsc)) >> 8))
 
 /*
  * This selects whether TX packets are sent one by one to the SMC91x internal
@@ -260,6 +286,12 @@
 #define SMC_SET_MII(smsc, x)		SMC_outw(x, ioaddr, MII_REG(smsc))
 
 #define SMC_GET_MII(smsc)		SMC_inw(ioaddr, MII_REG(smsc))
+
+#define SMC_GET_MIR(smsc)		SMC_inw(ioaddr, MIR_REG(smsc))
+
+#define SMC_SET_MIR(smsc, x)		SMC_outw(x, ioaddr, MIR_REG(smsc))
+
+#define SMC_GET_FIFO(smsc)		SMC_inw(ioaddr, FIFO_REG(smsc))
 
 #define SMC_SET_RPC(smsc, x)						\
 	do {								\
@@ -425,12 +457,47 @@
 #define TXFIFO_REG(smsc)	SMC_REG(smsc, 0x0004, 2)
 #define TXFIFO_TEMPTY	0x80	// TX FIFO Empty
 
+#define SMC_GET_TXFIFO(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, TXFIFO_REG(smsc)))	\
+				: (SMC_inw(ioaddr, TXFIFO_REG(smsc)) & 0xFF))
+
 // Pointer Register
 /* BANK 2 */
 #define PTR_REG(smsc)		SMC_REG(smsc, 0x0006, 2)
 #define PTR_RCV		0x8000 // 1=Receive area, 0=Transmit area
 #define PTR_AUTOINC 	0x4000 // Auto increment the pointer on each access
 #define PTR_READ	0x2000 // When 1 the operation is a read
+
+#define SMC_GET_PTR(smsc)		SMC_inw(ioaddr, PTR_REG(smsc))
+
+
+#define SMC_GET_INT_MASK(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, IM_REG(smsc)))	\
+				: (SMC_inw(ioaddr, INT_REG(smsc)) >> 8))
+
+#define SMC_SET_INT_MASK(smsc, x)					\
+	do {								\
+		if (SMC_8BIT(smsc))					\
+			SMC_outb(x, ioaddr, IM_REG(smsc));		\
+		else							\
+			SMC_outw((x) << 8, ioaddr, INT_REG(smsc));	\
+	} while (0)
+
+#define SMC_GET_INT(smsc)						\
+	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, INT_REG(smsc)))	\
+				: (SMC_inw(ioaddr, INT_REG(smsc)) & 0xFF))
+
+#define SMC_ACK_INT(smsc, x)						\
+	do {								\
+		if (SMC_8BIT(smsc))					\
+			SMC_outb(x, ioaddr, INT_REG(smsc));		\
+		else {							\
+			unsigned long __flags;				\
+			int __mask;					\
+			__mask = SMC_inw(ioaddr, INT_REG(smsc)) & ~0xff; \
+			SMC_outw(__mask | (x), ioaddr, INT_REG(smsc));	\
+		}							\
+	} while (0)
 
 // Individual Address Registers
 /* BANK 1 */
@@ -505,6 +572,41 @@
 			SMC_outsw(ioaddr, DATA_REG(smsc), p, (l) >> 1);	\
 		else if (SMC_8BIT(smsc))				\
 			SMC_outsb(ioaddr, DATA_REG(smsc), p, l);	\
+	} while (0)
+
+#define SMC_PULL_DATA(smsc, p, l)					\
+	do {								\
+		if (SMC_32BIT(smsc)) {				\
+			void *__ptr = (p);				\
+			int __len = (l);				\
+			void __iomem *__ioaddr = ioaddr;		\
+			if ((unsigned long)__ptr & 2) {			\
+				/*					\
+				 * We want 32bit alignment here.	\
+				 * Since some buses perform a full	\
+				 * 32bit fetch even for 16bit data	\
+				 * we can't use SMC_inw() here.		\
+				 * Back both source (on-chip) and	\
+				 * destination pointers of 2 bytes.	\
+				 * This is possible since the call to	\
+				 * SMC_GET_PKT_HDR() already advanced	\
+				 * the source pointer of 4 bytes, and	\
+				 * the skb_reserve(skb, 2) advanced	\
+				 * the destination pointer of 2 bytes.	\
+				 */					\
+				__ptr -= 2;				\
+				__len += 2;				\
+				SMC_SET_PTR(smsc,			\
+					2|PTR_READ|PTR_RCV|PTR_AUTOINC); \
+			}						\
+			if (SMC_CAN_USE_DATACS && smsc->datacs)		\
+				__ioaddr = smsc->datacs;			\
+			__len += 2;					\
+			SMC_insl(__ioaddr, DATA_REG(smsc), __ptr, __len>>2); \
+		} else if (SMC_16BIT(smsc))				\
+			SMC_insw(ioaddr, DATA_REG(smsc), p, (l) >> 1);	\
+		else if (SMC_8BIT(smsc))				\
+			SMC_insb(ioaddr, DATA_REG(smsc), p, l);		\
 	} while (0)
 
 #define SMC_SET_PTR(smsc, x)						\

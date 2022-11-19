@@ -23,6 +23,7 @@
 #include <kernel/delay.h>
 #include <mm/core_memprot.h>
 
+
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
 #endif
@@ -34,6 +35,11 @@
  */
 #define MEMORY_WAIT_TIME	16
 
+/*
+ * The maximum number of processing loops allowed for each call to the
+ * IRQ handler.
+ */
+#define MAX_IRQ_LOOPS		8
 
 /* this enables an interrupt in the interrupt mask register */
 #define SMC_ENABLE_INT(smsc, x) do {					\
@@ -50,6 +56,7 @@
 	mask &= ~(x);							\
 	SMC_SET_INT_MASK(smsc, mask);					\
 } while (0)
+
 
 #if SMC_DEBUG > 3
 static void PRINT_PKT(u8 *buf, int length)
@@ -123,6 +130,8 @@ static unsigned int mii_check_media (struct mii_if_info *mii, unsigned int ok_to
 static int mii_link_ok (struct mii_if_info *mii);
 static int smc_hard_start_xmit(struct sk_buff *skb);
 static void smc_hardware_send_pkt(void);
+static void smc_tx(void);
+static void smc_rcv(void);
 
 /**
  * is_multicast_ether_addr - Determine if the Ethernet address is a multicast.
@@ -280,16 +289,102 @@ static inline void io_write32s(volatile uintptr_t addr, const void *buffer, int 
 
 static enum itr_return smsc91x_itr_cb(struct itr_handler *h)
 {
-	//struct atmel_wdt *wdt = h->data;
-	//uint32_t sr = io_read32(wdt->base + WDT_SR);
+	void __iomem *ioaddr = smsc->base;
+	int status, mask, timeout, card_stats;
+	int saved_pointer;
+	enum itr_return ret = ITRR_NONE;
 
-	(void)h;
-	//if (sr & WDT_SR_DUNF)
-		DMSG("SMSC IRQ!!!!!");
-	//if (sr & WDT_SR_DERR)
-		//DMSG("Watchdog Error !");
+	saved_pointer = SMC_GET_PTR(smsc);
+	mask = SMC_GET_INT_MASK(smsc);
+	SMC_SET_INT_MASK(smsc, 0);
 
-	//panic("Watchdog interrupt");
+	/* set a timeout value, so I don't stay here forever */
+	timeout = MAX_IRQ_LOOPS;
+
+	do {
+		status = SMC_GET_INT(smsc);
+
+		DMSG("%s: INT 0x%02x MASK 0x%02x MEM 0x%04x FIFO 0x%04x\n",
+			CARDNAME, status, mask,
+			({ int meminfo; SMC_SELECT_BANK(smsc, 0);
+			   meminfo = SMC_GET_MIR(smsc);
+			   SMC_SELECT_BANK(smsc, 2); meminfo; }),
+			SMC_GET_FIFO(smsc));
+
+		status &= mask;
+		if (!status)
+			break;
+
+		if (status & IM_TX_INT) {
+			/* do this before RX as it will free memory quickly */
+			DMSG("%s: TX int\n", CARDNAME);
+			smc_tx();
+			SMC_ACK_INT(smsc, IM_TX_INT);
+		}
+		else if (status & IM_RCV_INT) {
+			DMSG("%s: RX irq\n", CARDNAME);
+			smc_rcv();
+		} else if (status & IM_ALLOC_INT) {
+			DMSG("%s: Allocation irq\n", CARDNAME);
+			mask &= ~IM_ALLOC_INT;
+		} else if (status & IM_TX_EMPTY_INT) {
+			DMSG("%s: TX empty\n", CARDNAME);
+			mask &= ~IM_TX_EMPTY_INT;
+
+			/* update stats */
+#if 0
+			SMC_SELECT_BANK(smsc, 0);
+			card_stats = SMC_GET_COUNTER(smsc);
+			SMC_SELECT_BANK(smsc, 2);
+
+			/* single collisions */
+			dev->stats.collisions += card_stats & 0xF;
+			card_stats >>= 4;
+
+			/* multiple collisions */
+			dev->stats.collisions += card_stats & 0xF;
+#endif
+		}
+//		else if (status & IM_RX_OVRN_INT) {
+//			DBG(1, "%s: RX overrun (EPH_ST 0x%04x)\n", dev->name,
+//			       ({ int eph_st; SMC_SELECT_BANK(lp, 0);
+//				  eph_st = SMC_GET_EPH_STATUS(lp);
+//				  SMC_SELECT_BANK(lp, 2); eph_st; }));
+//			SMC_ACK_INT(lp, IM_RX_OVRN_INT);
+//			dev->stats.rx_errors++;
+//			dev->stats.rx_fifo_errors++;
+//		} else if (status & IM_EPH_INT) {
+//			smc_eph_interrupt(dev);
+//		} else if (status & IM_MDINT) {
+//			SMC_ACK_INT(lp, IM_MDINT);
+//			smc_phy_interrupt(dev);
+//		} else if (status & IM_ERCV_INT) {
+//			SMC_ACK_INT(lp, IM_ERCV_INT);
+//			PRINTK("%s: UNSUPPORTED: ERCV INTERRUPT \n", dev->name);
+//		}
+	} while (--timeout);
+
+	/* restore register states */
+	SMC_SET_PTR(smsc, saved_pointer);
+	SMC_SET_INT_MASK(smsc, mask);
+	//spin_unlock(&lp->lock);
+
+#ifndef CONFIG_NET_POLL_CONTROLLER
+	if (timeout == MAX_IRQ_LOOPS)
+		EMSG("%s: spurious interrupt (mask = 0x%02x)\n",
+		       CARDNAME, mask);
+#endif
+	DMSG("%s: Interrupt done (%d loops)\n",
+			CARDNAME, MAX_IRQ_LOOPS - timeout);
+
+	/*
+	 * We return IRQ_HANDLED unconditionally here even if there was
+	 * nothing to do.  There is a possibility that a packet might
+	 * get enqueued into the chip right after TX_EMPTY_INT is raised
+	 * but just before the CPU acknowledges the IRQ.
+	 * Better take an unneeded IRQ in some occasions than complexifying
+	 * the code for all cases.
+	 */
 
 	return ITRR_HANDLED;
 }
@@ -554,7 +649,7 @@ void smc_reset(void)
 	/* Reset the MMU */
 	SMC_SELECT_BANK(smsc, 2);
 	SMC_SET_MMU_CMD(smsc, MC_RESET);
-	//SMC_WAIT_MMU_BUSY(smsc);
+	//SMC_WAIT_MMU_BUSY(smsc); TODO
 }
 
 
@@ -1224,6 +1319,170 @@ void send_test_pkt(void)
 	rc = smc_hard_start_xmit(skb);
 
 	DMSG("Send test pkt rc = %i", rc);
+}
+
+/*
+ * This handles a TX interrupt, which is only called when:
+ * - a TX error occurred, or
+ * - CTL_AUTO_RELEASE is not set and TX of a packet completed.
+ */
+void smc_tx(void)
+{
+	void __iomem *ioaddr = smsc->base;
+	unsigned int saved_packet, packet_no, tx_status, pkt_len;
+
+	/* If the TX FIFO is empty then nothing to do */
+	packet_no = SMC_GET_TXFIFO(smsc);
+	if (unlikely(packet_no & TXFIFO_TEMPTY)) {
+		EMSG("%s: smc_tx with nothing on FIFO.\n", CARDNAME);
+		return;
+	}
+
+	/* select packet to read from */
+	saved_packet = SMC_GET_PN(smsc);
+	SMC_SET_PN(smsc, packet_no);
+
+	/* read the first word (status word) from this packet */
+	SMC_SET_PTR(smsc, PTR_AUTOINC | PTR_READ);
+	SMC_GET_PKT_HDR(smsc, tx_status, pkt_len);
+	(void)pkt_len; /* suppress compile warning */
+	DMSG("%s: TX STATUS 0x%04x PNR 0x%02x\n",
+		CARDNAME, tx_status, packet_no);
+
+	//if (!(tx_status & ES_TX_SUC))
+		//dev->stats.tx_errors++;
+
+	//if (tx_status & ES_LOSTCARR)
+		//dev->stats.tx_carrier_errors++;
+
+	if (tx_status & (ES_LATCOL | ES_16COL)) {
+		EMSG("%s: %s occurred on last xmit\n", CARDNAME,
+		       (tx_status & ES_LATCOL) ?
+			"late collision" : "too many collisions");
+//		dev->stats.tx_window_errors++;
+//		if (!(dev->stats.tx_window_errors & 63) && net_ratelimit()) {
+//			printk(KERN_INFO "%s: unexpectedly large number of "
+//			       "bad collisions. Please check duplex "
+//			       "setting.\n", dev->name);
+//		}
+	}
+
+	/* kill the packet */
+	//SMC_WAIT_MMU_BUSY(smsc); TODO - check if wait is needed
+	SMC_SET_MMU_CMD(smsc, MC_FREEPKT);
+
+	/* Don't restore Packet Number Reg until busy bit is cleared */
+	//SMC_WAIT_MMU_BUSY(smsc); TODO - check if wait is needed
+	SMC_SET_PN(smsc, saved_packet);
+
+	/* re-enable transmit */
+	SMC_SELECT_BANK(smsc, 0);
+	SMC_SET_TCR(smsc, smsc->tcr_cur_mode);
+	SMC_SELECT_BANK(smsc, 2);
+}
+
+/*
+ * This is the procedure to handle the receipt of a packet.
+ */
+void smc_rcv(void)
+{
+	void __iomem *ioaddr = smsc->base;
+	unsigned int packet_number, status, packet_len;
+
+	packet_number = SMC_GET_RXFIFO(smsc);
+	if (unlikely(packet_number & RXFIFO_REMPTY)) {
+		EMSG("%s: smc_rcv with nothing on FIFO.\n", CARDNAME);
+		return;
+	}
+
+	/* read from start of packet */
+	SMC_SET_PTR(smsc, PTR_READ | PTR_RCV | PTR_AUTOINC);
+
+	/* First two words are status and packet length */
+	SMC_GET_PKT_HDR(smsc, status, packet_len);
+	packet_len &= 0x07ff;  /* mask off top bits */
+	DMSG("%s: RX PNR 0x%x STATUS 0x%04x LENGTH 0x%04x (%d)\n",
+		CARDNAME, packet_number, status,
+		packet_len, packet_len);
+
+	back:
+	if (unlikely((packet_len < 6) || (status & RS_ERRORS))) {
+		if ((status & RS_TOOLONG) && packet_len <= (1514 + 4 + 6)) {
+			/* accept VLAN packets */
+			status &= ~RS_TOOLONG;
+			goto back;
+		}
+		if (packet_len < 6) {
+			/* bloody hardware */
+			EMSG("%s: fubar (rxlen %u status %x\n",
+					CARDNAME, packet_len, status);
+			status |= RS_TOOSHORT;
+		}
+		//SMC_WAIT_MMU_BUSY(smsc); TODO
+		SMC_SET_MMU_CMD(lp, MC_RELEASE);
+#if 0
+		dev->stats.rx_errors++;
+		if (status & RS_ALGNERR)
+			dev->stats.rx_frame_errors++;
+		if (status & (RS_TOOSHORT | RS_TOOLONG))
+			dev->stats.rx_length_errors++;
+		if (status & RS_BADCRC)
+			dev->stats.rx_crc_errors++;
+#endif
+	} else {
+		struct sk_buff *skb;
+		unsigned char *data;
+		unsigned int data_len;
+#if 0
+		/* set multicast stats */
+		if (status & RS_MULTICAST)
+			dev->stats.multicast++;
+#endif
+		/*
+		 * Actual payload is packet_len - 6 (or 5 if odd byte).
+		 * We want skb_reserve(2) and the final ctrl word
+		 * (2 bytes, possibly containing the payload odd byte).
+		 * Furthermore, we add 2 bytes to allow rounding up to
+		 * multiple of 4 bytes on 32 bit buses.
+		 * Hence packet_len - 6 + 2 + 2 + 2.
+		 */
+		skb = (struct sk_buff*) bstgw_ethpool_buf_alloc(NULL);
+		if (unlikely(skb == NULL)) {
+			EMSG("%s: Low memory, packet dropped.\n", CARDNAME);
+			//SMC_WAIT_MMU_BUSY(smsc); TODO
+			SMC_SET_MMU_CMD(smsc, MC_RELEASE);
+#if 0
+			dev->stats.rx_dropped++;
+#endif
+			return;
+		}
+
+		/* Align IP header to 32 bits */
+		skb_reserve(skb, 2);
+
+		/* BUG: the LAN91C111 rev A never sets this bit. Force it. */
+		if (smsc->version == 0x90)
+			status |= RS_ODDFRAME;
+
+		/*
+		 * If odd length: packet_len - 5,
+		 * otherwise packet_len - 6.
+		 * With the trailing ctrl byte it's packet_len - 4.
+		 */
+		data_len = packet_len - ((status & RS_ODDFRAME) ? 5 : 6);
+		data = skb_put(skb, data_len);
+		SMC_PULL_DATA(smsc, data, packet_len - 4);
+
+		//SMC_WAIT_MMU_BUSY(smsc); //TODO
+		SMC_SET_MMU_CMD(smsc, MC_RELEASE);
+
+		PRINT_PKT(data, packet_len - 4);
+#if 0
+		skb->protocol = eth_type_trans(skb, dev);
+		dev->stats.rx_packets++;
+		dev->stats.rx_bytes += data_len;
+#endif
+	}
 }
 
 TEE_Result init_eth(void)

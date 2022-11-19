@@ -11,7 +11,25 @@ struct sk_buff {
 	struct bstgw_ether_buffer eth_buf;
 };
 
-void *skb_put(struct sk_buff *skb, unsigned int len);
+/**
+ *  skb_put - add data to a buffer
+ *  @skb: buffer to use
+ *  @len: amount of data to add
+ *
+ *  This function extends the used data area of the buffer. If this would
+ *  exceed the total buffer size the kernel will panic. A pointer to the
+ *  first byte of the extra data is returned.
+ */
+static inline void *skb_put(struct sk_buff *skb, unsigned int len) {
+	const size_t rem_space = skb->eth_buf.buf_cap
+		- (skb->eth_buf.data_off + skb->eth_buf.data_len);
+
+	if(unlikely( rem_space < len )) panic("skb_put not enough free buffer space");
+
+	const size_t old_len = skb->eth_buf.data_len;
+	skb->eth_buf.data_len += len;
+	return bstgw_ethbuf_data_ptr(&skb->eth_buf, old_len);
+}
 
 static inline void dev_kfree_skb(struct sk_buff *skb) {
 	bstgw_ethpool_buf_free((bstgw_ethbuf_t *)skb);
