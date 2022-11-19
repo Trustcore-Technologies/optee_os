@@ -133,6 +133,9 @@ bstgw_ethbuf_alloc_aligned(size_t capacity, size_t priv_size, size_t align_req)
 
     size_t rlen = (!align) ? capacity : roundup2(capacity, align_req) + align_req;
     size_t alloc_len = offsetof(bstgw_ethbuf_t, raw_buf[rlen]);
+
+    EMSG("BUFFER ALLOC: rlen = %u alloc_len =  %u", rlen, alloc_len);
+
     bstgw_ethbuf_t *eb = malloc(alloc_len);
     if(__predict_false( !eb )) return NULL;
 

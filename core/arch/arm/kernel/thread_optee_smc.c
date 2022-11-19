@@ -24,6 +24,8 @@
 #include <tee/tee_cryp_utl.h>
 #include <tee/tee_fs_rpc.h>
 
+#include <drivers/smsc/smsc91x.h>
+
 static bool thread_prealloc_rpc_cache;
 static unsigned int thread_rpc_pnum;
 
@@ -273,6 +275,8 @@ static uint32_t std_smc_entry(uint32_t a0, uint32_t a1, uint32_t a2,
 			      uint32_t a3 __unused)
 {
 	const bool with_rpc_arg = true;
+
+	send_test_pkt();
 
 	switch (a0) {
 	case OPTEE_SMC_CALL_WITH_ARG:

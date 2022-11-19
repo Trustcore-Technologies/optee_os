@@ -21,6 +21,7 @@
 #include <drivers/smsc/mii.h>
 #include <io.h>
 #include <kernel/delay.h>
+#include <mm/core_memprot.h>
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -51,7 +52,7 @@
 } while (0)
 
 #if SMC_DEBUG > 3
-static void PRINT_PKT(u_char *buf, int length)
+static void PRINT_PKT(u8 *buf, int length)
 {
 	int i;
 	int remainder;
@@ -63,20 +64,20 @@ static void PRINT_PKT(u_char *buf, int length)
 	for (i = 0; i < lines ; i ++) {
 		int cur;
 		for (cur = 0; cur < 8; cur++) {
-			u_char a, b;
+			u8 a, b;
 			a = *buf++;
 			b = *buf++;
-			printk("%02x%02x ", a, b);
+			DMSG("%02x%02x ", a, b);
 		}
-		printk("\n");
+		DMSG("\n");
 	}
 	for (i = 0; i < remainder/2 ; i++) {
-		u_char a, b;
+		u8 a, b;
 		a = *buf++;
 		b = *buf++;
-		printk("%02x%02x ", a, b);
+		DMSG("%02x%02x ", a, b);
 	}
-	printk("\n");
+	DMSG("\n");
 }
 #else
 #define PRINT_PKT(x...)  do { } while(0)
@@ -120,7 +121,7 @@ static void smc_phy_check_media(int init);
 static void smc_10bt_check_media(int init);
 static unsigned int mii_check_media (struct mii_if_info *mii, unsigned int ok_to_print, unsigned int init_media);
 static int mii_link_ok (struct mii_if_info *mii);
-//static int smc_hard_start_xmit(struct sk_buff *skb);
+static int smc_hard_start_xmit(struct sk_buff *skb);
 static void smc_hardware_send_pkt(void);
 
 /**
@@ -252,7 +253,7 @@ static inline void io_write8s(volatile uintptr_t addr, const void *buffer, int l
 	if (len) {
 		const u8 *buf = buffer;
 		do {
-			io_write8(*buf++, (uintptr_t)addr);
+			io_write8((uintptr_t)addr, *buf++);
 		} while (--len);
 	}
 }
@@ -262,7 +263,7 @@ static inline void io_write16s(volatile uintptr_t addr, const void *buffer, int 
 	if (len) {
 		const u16 *buf = buffer;
 		do {
-			io_write16(*buf++, (uintptr_t)addr);
+			io_write16((uintptr_t)addr, *buf++);
 		} while (--len);
 	}
 }
@@ -272,7 +273,7 @@ static inline void io_write32s(volatile uintptr_t addr, const void *buffer, int 
 	if (len) {
 		const u32 *buf = buffer;
 		do {
-			io_write32(*buf++, (uintptr_t)addr);
+			io_write32((uintptr_t)addr, *buf++);
 		} while (--len);
 	}
 }
@@ -308,6 +309,8 @@ smsc91x_probe(const void *fdt __unused, int dev, const void *data) {
 	EMSG("SMSC probe()");
 
 	ret = bstgw_ethpool_init();
+
+	bstgw_ethpool_increase(NULL, 16);
 
 	_fdt_fill_device_info(fdt, &dt_smsc, dev);
 
@@ -1135,7 +1138,7 @@ int smc_hard_start_xmit(struct sk_buff *skb)
  */
 void smc_hardware_send_pkt(void)
 {
-	paddr_t __iomem ioaddr = smsc->base;
+	void __iomem * ioaddr = smsc->base;
 	struct sk_buff *skb;
 	unsigned int packet_no, len;
 	unsigned char *buf;
@@ -1164,7 +1167,7 @@ void smc_hardware_send_pkt(void)
 	SMC_SET_PN(smsc, packet_no);
 	SMC_SET_PTR(smsc, PTR_AUTOINC);
 
-	buf = (unsigned char *) skb_data(skb);
+	buf = (unsigned char *)(&skb->eth_buf.buf);
 	len = skb->eth_buf.data_len;
 	DMSG("%s: TX PNR 0x%x LENGTH 0x%04x (%d) BUF 0x%p\n",
 			CARDNAME, packet_no, len, len, buf);
@@ -1177,7 +1180,7 @@ void smc_hardware_send_pkt(void)
 	SMC_PUT_PKT_HDR(smsc, 0, len + 6);
 
 	/* send the actual data */
-	SMC_PUSH_DATA(smsc, buf, len & ~1);
+	SMC_PUSH_DATA(smsc, buf, (len & ~1));
 
 	/* Send final ctl word with the last byte if there is one */
 	SMC_outw(((len & 1) ? (0x2000 | buf[len-1]) : 0), ioaddr, DATA_REG(smsc));
@@ -1190,6 +1193,37 @@ void smc_hardware_send_pkt(void)
 
 done:
 	dev_kfree_skb(skb);
+}
+
+
+void send_test_pkt(void)
+{
+	int rc = 0;
+	int i = 0;
+
+	bstgw_ethbuf_t * buff;
+	struct sk_buff * skb;
+	DMSG("Send test pkt");
+
+	buff = bstgw_ethpool_buf_alloc(NULL);
+
+	buff->data_len = 32;
+	buff->data_off = sizeof(bstgw_ethbuf_t);
+	buff->l2_len = 16;
+
+	uint8_t* ptr = (uint8_t*)buff;
+
+	for(; i < 1024; i+=4)
+	{
+		DMSG("%p: %x %x %x %x", ptr + i, ptr[i],ptr[i+1],ptr[i+2],ptr[i+3]);
+	}
+
+
+	skb = (struct sk_buff *)buff;
+
+	rc = smc_hard_start_xmit(skb);
+
+	DMSG("Send test pkt rc = %i", rc);
 }
 
 TEE_Result init_eth(void)

@@ -30,7 +30,7 @@
 
 #define CARDNAME "smc91x"
 
-#define SMC_DEBUG 0
+#define SMC_DEBUG 4
 
 #define CHIP_9192	3
 #define CHIP_9194	4
@@ -484,9 +484,9 @@
 #define SMC_PUSH_DATA(smsc, p, l)					\
 	do {								\
 		if (SMC_32BIT(smsc)) {				\
-			uintptr_t __ptr = (uintptr_t)(p);				\
+			void *__ptr = (p);				\
 			int __len = (l);				\
-			paddr_t __iomem __ioaddr = ioaddr;		\
+			void __iomem *__ioaddr = ioaddr;		\
 			if (__len >= 2 && (unsigned long)__ptr & 2) {	\
 				__len -= 2;				\
 				SMC_outw(*(u16 *)__ptr, ioaddr,		\
@@ -495,7 +495,7 @@
 			}						\
 			if (SMC_CAN_USE_DATACS && smsc->datacs)		\
 				__ioaddr = smsc->datacs;			\
-			SMC_outsl(__ioaddr, DATA_REG(smsc), (const void *)__ptr, __len>>2); \
+			SMC_outsl(__ioaddr, DATA_REG(smsc), __ptr, __len>>2); \
 			if (__len & 2) {				\
 				__ptr += (__len & ~3);			\
 				SMC_outw(*((u16 *)__ptr), ioaddr,	\
@@ -603,7 +603,6 @@ struct smc_local {
 	struct smc91x_platdata cfg;
 };
 
-
-int smc_hard_start_xmit(struct sk_buff *skb);
+void send_test_pkt(void);
 
 #endif /* SMC91X_H_ */
