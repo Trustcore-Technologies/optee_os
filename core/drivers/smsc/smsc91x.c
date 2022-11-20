@@ -23,6 +23,7 @@
 #include <kernel/delay.h>
 #include <mm/core_memprot.h>
 
+#define ECHO_SRVR 	1
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -324,6 +325,7 @@ static enum itr_return smsc91x_itr_cb(struct itr_handler *h)
 		else if (status & IM_RCV_INT) {
 			DMSG("%s: RX irq\n", CARDNAME);
 			smc_rcv();
+			SMC_ACK_INT(smsc, IM_RCV_INT);
 		} else if (status & IM_ALLOC_INT) {
 			DMSG("%s: Allocation irq\n", CARDNAME);
 			mask &= ~IM_ALLOC_INT;
@@ -1238,12 +1240,6 @@ void smc_hardware_send_pkt(void)
 	unsigned int packet_no, len;
 	unsigned char *buf;
 
-//	if (!smc_special_trylock(&lp->lock, flags)) {
-//		netif_stop_queue(dev);
-//		tasklet_schedule(&lp->tx_task);
-//		return;
-//	}
-
 	skb = smsc->pending_tx_skb;
 	if (unlikely(!skb)) {
 		//smc_special_unlock(&lp->lock, flags);
@@ -1262,7 +1258,8 @@ void smc_hardware_send_pkt(void)
 	SMC_SET_PN(smsc, packet_no);
 	SMC_SET_PTR(smsc, PTR_AUTOINC);
 
-	buf = (unsigned char *)(&skb->eth_buf.buf);
+	buf = bstgw_ethbuf_data_ptr(&skb->eth_buf, 0);
+
 	len = skb->eth_buf.data_len;
 	DMSG("%s: TX PNR 0x%x LENGTH 0x%04x (%d) BUF 0x%p\n",
 			CARDNAME, packet_no, len, len, buf);
@@ -1348,23 +1345,25 @@ void smc_tx(void)
 	(void)pkt_len; /* suppress compile warning */
 	DMSG("%s: TX STATUS 0x%04x PNR 0x%02x\n",
 		CARDNAME, tx_status, packet_no);
+#if 0
+	if (!(tx_status & ES_TX_SUC))
+		dev->stats.tx_errors++;
 
-	//if (!(tx_status & ES_TX_SUC))
-		//dev->stats.tx_errors++;
-
-	//if (tx_status & ES_LOSTCARR)
-		//dev->stats.tx_carrier_errors++;
-
+	if (tx_status & ES_LOSTCARR)
+		dev->stats.tx_carrier_errors++;
+#endif
 	if (tx_status & (ES_LATCOL | ES_16COL)) {
 		EMSG("%s: %s occurred on last xmit\n", CARDNAME,
 		       (tx_status & ES_LATCOL) ?
 			"late collision" : "too many collisions");
-//		dev->stats.tx_window_errors++;
-//		if (!(dev->stats.tx_window_errors & 63) && net_ratelimit()) {
-//			printk(KERN_INFO "%s: unexpectedly large number of "
-//			       "bad collisions. Please check duplex "
-//			       "setting.\n", dev->name);
-//		}
+#if 0
+		dev->stats.tx_window_errors++;
+		if (!(dev->stats.tx_window_errors & 63) && net_ratelimit()) {
+			printk(KERN_INFO "%s: unexpectedly large number of "
+			       "bad collisions. Please check duplex "
+			       "setting.\n", dev->name);
+		}
+#endif
 	}
 
 	/* kill the packet */
@@ -1456,7 +1455,7 @@ void smc_rcv(void)
 #endif
 			return;
 		}
-
+		DMSG("skb cap = %u", skb->eth_buf.buf_cap);
 		/* Align IP header to 32 bits */
 		skb_reserve(skb, 2);
 
@@ -1481,6 +1480,12 @@ void smc_rcv(void)
 		skb->protocol = eth_type_trans(skb, dev);
 		dev->stats.rx_packets++;
 		dev->stats.rx_bytes += data_len;
+#endif
+
+#ifdef ECHO_SRVR
+		smc_hard_start_xmit(skb);
+#else
+		bstgw_ethpool_buf_free((bstgw_ethbuf_t *)skb);
 #endif
 	}
 }

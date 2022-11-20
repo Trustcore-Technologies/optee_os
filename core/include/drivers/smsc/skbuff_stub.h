@@ -97,7 +97,7 @@ static inline void skb_reserve(struct sk_buff *skb, int len) {
 	int cap;
 	assert(skb->eth_buf.data_len == 0);
 	cap = bstgw_ethbuf_buf_capacity(&skb->eth_buf);
-	if(unlikely( (size_t)len <= (cap - skb->eth_buf.data_off) )) {
+	if(unlikely( (size_t)len > (cap - skb->eth_buf.data_off) )) {
 		EMSG("reserve len > rest buffer size (len: %d, data_off: %lu)", len, skb->eth_buf.data_off);
 		panic();
 	}
