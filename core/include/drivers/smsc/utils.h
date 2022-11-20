@@ -25,10 +25,12 @@
 #define	__arraycount(__x)	(sizeof(__x) / sizeof(__x[0]))
 #endif
 
+#ifdef SPCM_UNUSED
 static void bstgw_spin_cycles(unsigned int *count) {
     volatile unsigned int n = *count;
     while(__predict_true( n-- )) __asm volatile("yield" ::: "memory");
 }
+#endif
 
 #ifndef unlikely
 #define unlikely(x)      __builtin_expect(!!(x), 0)

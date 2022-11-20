@@ -23,10 +23,10 @@ struct sk_buff {
 static inline void *skb_put(struct sk_buff *skb, unsigned int len) {
 	const size_t rem_space = skb->eth_buf.buf_cap
 		- (skb->eth_buf.data_off + skb->eth_buf.data_len);
+	const size_t old_len = skb->eth_buf.data_len;
 
 	if(unlikely( rem_space < len )) panic("skb_put not enough free buffer space");
 
-	const size_t old_len = skb->eth_buf.data_len;
 	skb->eth_buf.data_len += len;
 	return bstgw_ethbuf_data_ptr(&skb->eth_buf, old_len);
 }

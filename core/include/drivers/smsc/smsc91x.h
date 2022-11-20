@@ -30,7 +30,7 @@
 
 #define CARDNAME "smc91x"
 
-#define SMC_DEBUG 4
+#define SMC_DEBUG 0
 
 #define CHIP_9192	3
 #define CHIP_9194	4
@@ -487,18 +487,6 @@
 	(SMC_8BIT(smsc)	? (SMC_inb(ioaddr, INT_REG(smsc)))	\
 				: (SMC_inw(ioaddr, INT_REG(smsc)) & 0xFF))
 
-#define SMC_ACK_INT(smsc, x)						\
-	do {								\
-		if (SMC_8BIT(smsc))					\
-			SMC_outb(x, ioaddr, INT_REG(smsc));		\
-		else {							\
-			unsigned long __flags;				\
-			int __mask;					\
-			__mask = SMC_inw(ioaddr, INT_REG(smsc)) & ~0xff; \
-			SMC_outw(__mask | (x), ioaddr, INT_REG(smsc));	\
-		}							\
-	} while (0)
-
 // Individual Address Registers
 /* BANK 1 */
 #define ADDR0_REG(smsc)	SMC_REG(smsc, 0x0004, 1)
@@ -553,18 +541,18 @@
 		if (SMC_32BIT(smsc)) {				\
 			void *__ptr = (p);				\
 			int __len = (l);				\
-			void __iomem *__ioaddr = ioaddr;		\
+			paddr_t __iomem __ioaddr = ioaddr;		\
 			if (__len >= 2 && (unsigned long)__ptr & 2) {	\
 				__len -= 2;				\
 				SMC_outw(*(u16 *)__ptr, ioaddr,		\
 					DATA_REG(smsc));		\
-				__ptr += 2;				\
+				__ptr = (char*)__ptr + 2;				\
 			}						\
 			if (SMC_CAN_USE_DATACS && smsc->datacs)		\
 				__ioaddr = smsc->datacs;			\
 			SMC_outsl(__ioaddr, DATA_REG(smsc), __ptr, __len>>2); \
 			if (__len & 2) {				\
-				__ptr += (__len & ~3);			\
+				__ptr = (char*)__ptr + (__len & ~3);			\
 				SMC_outw(*((u16 *)__ptr), ioaddr,	\
 					 DATA_REG(smsc));		\
 			}						\
@@ -579,7 +567,7 @@
 		if (SMC_32BIT(smsc)) {				\
 			void *__ptr = (p);				\
 			int __len = (l);				\
-			void __iomem *__ioaddr = ioaddr;		\
+			paddr_t __iomem __ioaddr = ioaddr;		\
 			if ((unsigned long)__ptr & 2) {			\
 				/*					\
 				 * We want 32bit alignment here.	\
@@ -594,7 +582,7 @@
 				 * the skb_reserve(skb, 2) advanced	\
 				 * the destination pointer of 2 bytes.	\
 				 */					\
-				__ptr -= 2;				\
+				__ptr = (char*)__ptr - 2;				\
 				__len += 2;				\
 				SMC_SET_PTR(smsc,			\
 					2|PTR_READ|PTR_RCV|PTR_AUTOINC); \

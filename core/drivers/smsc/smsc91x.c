@@ -133,6 +133,8 @@ static int smc_hard_start_xmit(struct sk_buff *skb);
 static void smc_hardware_send_pkt(void);
 static void smc_tx(void);
 static void smc_rcv(void);
+static void smc_eph_interrupt(void);
+static void smc_phy_interrupt(void);
 
 /**
  * is_multicast_ether_addr - Determine if the Ethernet address is a multicast.
@@ -288,12 +290,11 @@ static inline void io_write32s(volatile uintptr_t addr, const void *buffer, int 
 	}
 }
 
-static enum itr_return smsc91x_itr_cb(struct itr_handler *h)
+static enum itr_return smsc91x_itr_cb(struct itr_handler *h __maybe_unused)
 {
-	void __iomem *ioaddr = smsc->base;
-	int status, mask, timeout, card_stats;
+	paddr_t __iomem ioaddr = smsc->base;
+	int status, mask, timeout;
 	int saved_pointer;
-	enum itr_return ret = ITRR_NONE;
 
 	saved_pointer = SMC_GET_PTR(smsc);
 	mask = SMC_GET_INT_MASK(smsc);
@@ -346,24 +347,25 @@ static enum itr_return smsc91x_itr_cb(struct itr_handler *h)
 			/* multiple collisions */
 			dev->stats.collisions += card_stats & 0xF;
 #endif
+		} else if (status & IM_RX_OVRN_INT) {
+			DMSG("%s: RX overrun (EPH_ST 0x%04x)\n", CARDNAME,
+			       ({ int eph_st; SMC_SELECT_BANK(smsc, 0);
+				  eph_st = SMC_GET_EPH_STATUS(lp);
+				  SMC_SELECT_BANK(smsc, 2); eph_st; }));
+			SMC_ACK_INT(smsc, IM_RX_OVRN_INT);
+#if 0
+			dev->stats.rx_errors++;
+			dev->stats.rx_fifo_errors++;
+#endif
+		} else if (status & IM_EPH_INT) {
+			smc_eph_interrupt();
+		} else if (status & IM_MDINT) {
+			SMC_ACK_INT(smsc, IM_MDINT);
+			smc_phy_interrupt();
+		} else if (status & IM_ERCV_INT) {
+			SMC_ACK_INT(smsc, IM_ERCV_INT);
+			EMSG("%s: UNSUPPORTED: ERCV INTERRUPT \n", CARDNAME);
 		}
-//		else if (status & IM_RX_OVRN_INT) {
-//			DBG(1, "%s: RX overrun (EPH_ST 0x%04x)\n", dev->name,
-//			       ({ int eph_st; SMC_SELECT_BANK(lp, 0);
-//				  eph_st = SMC_GET_EPH_STATUS(lp);
-//				  SMC_SELECT_BANK(lp, 2); eph_st; }));
-//			SMC_ACK_INT(lp, IM_RX_OVRN_INT);
-//			dev->stats.rx_errors++;
-//			dev->stats.rx_fifo_errors++;
-//		} else if (status & IM_EPH_INT) {
-//			smc_eph_interrupt(dev);
-//		} else if (status & IM_MDINT) {
-//			SMC_ACK_INT(lp, IM_MDINT);
-//			smc_phy_interrupt(dev);
-//		} else if (status & IM_ERCV_INT) {
-//			SMC_ACK_INT(lp, IM_ERCV_INT);
-//			PRINTK("%s: UNSUPPORTED: ERCV INTERRUPT \n", dev->name);
-//		}
 	} while (--timeout);
 
 	/* restore register states */
@@ -1235,7 +1237,7 @@ int smc_hard_start_xmit(struct sk_buff *skb)
  */
 void smc_hardware_send_pkt(void)
 {
-	void __iomem * ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	struct sk_buff *skb;
 	unsigned int packet_no, len;
 	unsigned char *buf;
@@ -1291,7 +1293,7 @@ done:
 void send_test_pkt(void)
 {
 	int rc = 0;
-	int i = 0;
+//	int i = 0;
 
 	bstgw_ethbuf_t * buff;
 	struct sk_buff * skb;
@@ -1303,12 +1305,12 @@ void send_test_pkt(void)
 	buff->data_off = sizeof(bstgw_ethbuf_t);
 	buff->l2_len = 16;
 
-	uint8_t* ptr = (uint8_t*)buff;
-
-	for(; i < 1024; i+=4)
-	{
-		DMSG("%p: %x %x %x %x", ptr + i, ptr[i],ptr[i+1],ptr[i+2],ptr[i+3]);
-	}
+//	uint8_t* ptr = (uint8_t*)buff;
+//
+//	for(; i < 1024; i+=4)
+//	{
+//		DMSG("%p: %x %x %x %x", ptr + i, ptr[i],ptr[i+1],ptr[i+2],ptr[i+3]);
+//	}
 
 
 	skb = (struct sk_buff *)buff;
@@ -1325,7 +1327,7 @@ void send_test_pkt(void)
  */
 void smc_tx(void)
 {
-	void __iomem *ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	unsigned int saved_packet, packet_no, tx_status, pkt_len;
 
 	/* If the TX FIFO is empty then nothing to do */
@@ -1385,7 +1387,7 @@ void smc_tx(void)
  */
 void smc_rcv(void)
 {
-	void __iomem *ioaddr = smsc->base;
+	paddr_t __iomem ioaddr = smsc->base;
 	unsigned int packet_number, status, packet_len;
 
 	packet_number = SMC_GET_RXFIFO(smsc);
@@ -1455,7 +1457,6 @@ void smc_rcv(void)
 #endif
 			return;
 		}
-		DMSG("skb cap = %u", skb->eth_buf.buf_cap);
 		/* Align IP header to 32 bits */
 		skb_reserve(skb, 2);
 
@@ -1487,6 +1488,44 @@ void smc_rcv(void)
 #else
 		bstgw_ethpool_buf_free((bstgw_ethbuf_t *)skb);
 #endif
+	}
+}
+
+static void smc_eph_interrupt(void)
+{
+	paddr_t __iomem ioaddr = smsc->base;
+	unsigned int ctl;
+
+	smc_10bt_check_media(0);
+
+	SMC_SELECT_BANK(smsc, 1);
+	ctl = SMC_GET_CTL(smsc);
+	SMC_SET_CTL(smsc, ctl & ~CTL_LE_ENABLE);
+	SMC_SET_CTL(smsc, ctl);
+	SMC_SELECT_BANK(smsc, 2);
+}
+
+/*
+ * smc_phy_interrupt
+ *
+ * Purpose:  Handle interrupts relating to PHY register 18. This is
+ *  called from the "hard" interrupt handler under our private spinlock.
+ */
+void smc_phy_interrupt(void)
+{
+	int phyaddr = smsc->mii.phy_id;
+	int phy18;
+
+	if (smsc->phy_type == 0)
+		return;
+
+	for(;;) {
+		smc_phy_check_media(0);
+
+		/* Read PHY Register 18, Status Output */
+		phy18 = smc_phy_read(phyaddr, PHY_INT_REG);
+		if ((phy18 & PHY_INT_INT) == 0)
+			break;
 	}
 }
 

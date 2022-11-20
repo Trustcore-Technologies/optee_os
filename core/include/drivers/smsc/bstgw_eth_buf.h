@@ -65,26 +65,25 @@ typedef struct bstgw_ether_buffer bstgw_ethbuf_t;
 
 
 // capacity of the buffer
-inline size_t bstgw_ethbuf_buf_capacity(const bstgw_ethbuf_t *);
+size_t bstgw_ethbuf_buf_capacity(const bstgw_ethbuf_t *);
 
 // data/payload length of the buffer
-inline size_t bstgw_ethbuf_data_len(const bstgw_ethbuf_t *);
+size_t bstgw_ethbuf_data_len(const bstgw_ethbuf_t *);
 
 // total length of packet buffer chain
 size_t bstgw_ethbuf_total_pkt_len(const bstgw_ethbuf_t *);
 
-inline void * bstgw_ethbuf_priv(const bstgw_ethbuf_t *);
+void * bstgw_ethbuf_priv(const bstgw_ethbuf_t *);
 
 // pointer to buffer head
-inline uint8_t * bstgw_ethbuf_head(const bstgw_ethbuf_t *);
+uint8_t * bstgw_ethbuf_head(const bstgw_ethbuf_t *);
 
-// pointer to data[offset]
-inline uint8_t * bstgw_ethbuf_data_ptr(const bstgw_ethbuf_t *, size_t);
-
-inline void bstgw_ethbuf_align_check(bstgw_ethbuf_t *);
 
 // try to linearize the chain
 int bstgw_ethbuf_linearize(bstgw_ethbuf_t *);
+
+// pointer to data[offset]
+uint8_t * bstgw_ethbuf_data_ptr(const bstgw_ethbuf_t *, size_t);
 
 /* bstgw_ethbuf_precut
  * Remove space from start of data.
@@ -97,7 +96,11 @@ int bstgw_ethbuf_linearize(bstgw_ethbuf_t *);
  */
 // cut from start of data
 // returns pointer to new start of data
-inline uint8_t * bstgw_ethbuf_precut(bstgw_ethbuf_t *, size_t);
+uint8_t * bstgw_ethbuf_precut(bstgw_ethbuf_t *, size_t);
+
+
+void bstgw_ethbuf_align_check(bstgw_ethbuf_t *);
+
 
 /* bstgw_ethbuf_prepend
  * Add new space to start of data.
@@ -107,7 +110,7 @@ inline uint8_t * bstgw_ethbuf_precut(bstgw_ethbuf_t *, size_t);
  * This function is highly incomplete.
  * Because of alignment issues, this is just used for replacing ethernet headers atm.
  */
-inline uint8_t * bstgw_ethbuf_prepend(bstgw_ethbuf_t *, size_t);
+uint8_t * bstgw_ethbuf_prepend(bstgw_ethbuf_t *, size_t);
 
 // TODO: add to/remove from chain
 
