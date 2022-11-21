@@ -675,15 +675,9 @@ struct smc_local {
 
 	spinlock_t lock;
 	u8 mac_addr[6];
-//
-//#ifdef CONFIG_ARCH_PXA
-//	/* DMA needs the physical address of the chip */
-//	u_long physaddr;
-//	struct device *device;
-//#endif
+
 	paddr_t __iomem base;
 	paddr_t __iomem datacs;
-//
 
 	/* the low address lines on some platforms aren't connected... */
 	int	io_shift;
@@ -693,6 +687,39 @@ struct smc_local {
 	struct smc91x_platdata cfg;
 };
 
-void send_test_pkt(void);
+/*Public driver API*/
+/////////////////////////////////////////////////////////
+
+/*
+ * Receive data callback prototype. The data is expected to copied
+ * into callee's own memory as the memory hosting it will be reclaimed
+ * after this callback returns.
+ *
+ * data - pointer to the starting received data byte
+ * data_len - length of data in bytes (huge packet not supported)
+ * */
+typedef void (*recv_data_cb)(u8 * data, size_t data_len);
+
+/*
+ * Send data out - this is a direct call to send data
+ * using the SMSC91 device. The data is copied into
+ * device internal memory thus it is safe to release
+ * any memory used to store 'data' after this call
+ * successfully returns.
+ *
+ * data - pointer to the starting data byte
+ * data_len - length of data in bytes (huge packet not supported)
+ * return - TEE_SUCCESS for data sent, any other value for error
+ * */
+TEE_Result send_data(u8 * data, size_t data_size);
+
+/*
+ * Interface to register a data receive callback.
+ * This API is called once during receiving TA initialization.
+ *
+ * cb - callback function pointer
+ * */
+void register_recv_cb(recv_data_cb cb);
+
 
 #endif /* SMC91X_H_ */

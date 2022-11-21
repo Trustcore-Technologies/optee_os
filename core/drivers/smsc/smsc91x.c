@@ -112,6 +112,8 @@ static const char * chip_ids[ 16 ] =  {
 	NULL, NULL, NULL,
 	NULL, NULL, NULL};
 
+recv_data_cb g_receive_cb = NULL;
+
 static TEE_Result init_eth(void);
 static TEE_Result smc_probe(paddr_t ioaddr);
 static void smc_reset(void);
@@ -136,6 +138,9 @@ static void smc_rcv(void);
 static void smc_eph_interrupt(void);
 static void smc_phy_interrupt(void);
 
+#if 0
+static void send_test_pkt(void);
+#endif
 /**
  * is_multicast_ether_addr - Determine if the Ethernet address is a multicast.
  * @addr: Pointer to a six-byte array containing the Ethernet address
@@ -288,6 +293,59 @@ static inline void io_write32s(volatile uintptr_t addr, const void *buffer, int 
 			io_write32((uintptr_t)addr, *buf++);
 		} while (--len);
 	}
+}
+
+
+
+TEE_Result send_data(u8 * data, size_t data_size)
+{
+	size_t data_len, rem_space;
+	struct sk_buff * skb = NULL;
+	u8* buffer_ptr;
+	if(data == NULL)
+	{
+		EMSG("%s: invalid data pointer passed", CARDNAME);
+		return TEE_ERROR_BAD_PARAMETERS;
+	}
+
+	skb = (struct sk_buff *)bstgw_ethpool_buf_alloc(NULL);
+
+	if(skb == NULL)
+	{
+		EMSG("%s: Failed to allocate buffer", CARDNAME);
+		return TEE_ERROR_OUT_OF_MEMORY;
+	}
+
+	/* Align IP header to 32 bits */
+	skb_reserve(skb, 2);
+
+	/*
+	 * If odd length: packet_len - 5,
+	 * otherwise packet_len - 6.
+	 * With the trailing ctrl byte it's packet_len - 4.
+	 */
+	data_len = data_size - 6;
+	buffer_ptr = skb_put(skb, data_len);
+
+	rem_space = skb->eth_buf.buf_cap - (skb->eth_buf.data_off + skb->eth_buf.data_len);
+
+	if(rem_space < data_size)
+	{
+		EMSG("%s: data passed is too large (%lu) - can't send", CARDNAME, data_size);
+		bstgw_ethpool_buf_free((bstgw_ethbuf_t *)skb);
+		return TEE_ERROR_EXCESS_DATA;
+	}
+
+	memcpy(buffer_ptr, data, data_size);
+	skb_put(skb, data_size);
+
+	return smc_hard_start_xmit(skb);
+}
+
+
+void register_recv_cb(recv_data_cb cb)
+{
+	g_receive_cb = cb;
 }
 
 static enum itr_return smsc91x_itr_cb(struct itr_handler *h __maybe_unused)
@@ -1289,7 +1347,7 @@ done:
 	dev_kfree_skb(skb);
 }
 
-
+#if 0
 void send_test_pkt(void)
 {
 	int rc = 0;
@@ -1319,6 +1377,7 @@ void send_test_pkt(void)
 
 	DMSG("Send test pkt rc = %i", rc);
 }
+#endif
 
 /*
  * This handles a TX interrupt, which is only called when:
@@ -1482,6 +1541,10 @@ void smc_rcv(void)
 		dev->stats.rx_packets++;
 		dev->stats.rx_bytes += data_len;
 #endif
+
+		if(g_receive_cb){
+			(*g_receive_cb)(data, data_len);
+		}
 
 #ifdef ECHO_SRVR
 		smc_hard_start_xmit(skb);
