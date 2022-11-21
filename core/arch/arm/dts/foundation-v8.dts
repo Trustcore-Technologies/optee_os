@@ -1,0 +1,17 @@
+/dts-v1/;
+
+/ {
+	model = "Foundation-v8A";
+	
+	motherboard {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+
+		eth@1a000000 { /* SMSC 91C111 ethernet */
+			compatible = "smc91x";
+			reg = <0x1a000000 0x10000>;
+			interrupts = <0 15 4>;
+		};
+	};
+};

@@ -13,6 +13,11 @@
 #define ITRF_TRIGGER_LEVEL	BIT(0)
 #define ITRF_SHARED			BIT(1)
 
+struct irq_handler {
+	void *data;
+	enum irq_return (*handle)(struct irq_handler *h);
+};
+
 struct itr_chip {
 	const struct itr_ops *ops;
 	/*
