@@ -1,6 +1,6 @@
 
 #include <kernel/pseudo_ta.h>
-#include <mm/core_memprot.h>
+#include <mm/core_mmu.h>
 #include <sm/optee_smc.h>
 #include <optee_msg.h>
 
@@ -61,24 +61,23 @@ uint32_t trustcore_smc_handler(uint8_t sub_id, uint64_t arg1,
     switch(sub_id)
     {
 	    case TC_SHMEM_TEE_SUB_ID:
-		    va = (vaddr_t)core_mmu_add_mapping(MEM_AREA_RAM_NSEC,arg1,sizeof(tc_shmem_t));
-		    EMSG("VA 0x%" PRIx64 " ", va);
+		    va = (vaddr_t *)core_mmu_add_mapping(MEM_AREA_RAM_NSEC,arg1,sizeof(tc_shmem_t));
 		    if (!va)
-                        goto bad_addr;
+		    {
+	              EMSG("Bad arg address 0x%"PRIxPA, arg1);
+		      return OPTEE_SMC_RETURN_EBADADDR;
+		    }
                     tct_shm = (tc_shmem_t *)va;
-		    EMSG("TCT Shared memory at 0x%" PRIx64 " ", tct_shm);
-		    EMSG("tee_data_ready arrived as:%d", tct_shm->tee_data_ready);
+		    EMSG("TCT Shared memory at 0x%" PRIx64 "  ", tct_shm);
 		    break;
 	    case TC_NOTIFY_DATA_TEE_SUB_ID:
 		    break;
 	    case TC_POLL_DATA_TEE_SUB_ID:
 		    break;
+            default:
+		    return OPTEE_SMC_RETURN_EBADCMD; 
     }
     return 0;
-    bad_addr:
-        EMSG("Bad arg address 0x%"PRIxPA, arg1);
-        return OPTEE_SMC_RETURN_EBADADDR;
-
 }
 
 static TEE_Result invoke_command(void *psess __unused,
