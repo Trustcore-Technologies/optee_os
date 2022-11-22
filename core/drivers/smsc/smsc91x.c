@@ -23,7 +23,7 @@
 #include <kernel/delay.h>
 #include <mm/core_memprot.h>
 
-#define ECHO_SRVR 	1
+//#define ECHO_SRVR	1
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -299,9 +299,8 @@ static inline void io_write32s(volatile uintptr_t addr, const void *buffer, int 
 
 TEE_Result send_data(u8 * data, size_t data_size)
 {
-	size_t data_len, rem_space;
+	size_t rem_space;
 	struct sk_buff * skb = NULL;
-	u8* buffer_ptr;
 	if(data == NULL)
 	{
 		EMSG("%s: invalid data pointer passed", CARDNAME);
@@ -309,23 +308,14 @@ TEE_Result send_data(u8 * data, size_t data_size)
 	}
 
 	skb = (struct sk_buff *)bstgw_ethpool_buf_alloc(NULL);
+	skb->eth_buf.data_len = 0;
+	skb->eth_buf.data_off = 0;
 
 	if(skb == NULL)
 	{
 		EMSG("%s: Failed to allocate buffer", CARDNAME);
 		return TEE_ERROR_OUT_OF_MEMORY;
 	}
-
-	/* Align IP header to 32 bits */
-	skb_reserve(skb, 2);
-
-	/*
-	 * If odd length: packet_len - 5,
-	 * otherwise packet_len - 6.
-	 * With the trailing ctrl byte it's packet_len - 4.
-	 */
-	data_len = data_size - 6;
-	buffer_ptr = skb_put(skb, data_len);
 
 	rem_space = skb->eth_buf.buf_cap - (skb->eth_buf.data_off + skb->eth_buf.data_len);
 
@@ -336,8 +326,8 @@ TEE_Result send_data(u8 * data, size_t data_size)
 		return TEE_ERROR_EXCESS_DATA;
 	}
 
-	memcpy(buffer_ptr, data, data_size);
 	skb_put(skb, data_size);
+	memcpy(bstgw_ethbuf_data_ptr(&skb->eth_buf, 0), data, data_size);
 
 	return smc_hard_start_xmit(skb);
 }
