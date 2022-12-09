@@ -4,6 +4,10 @@
 
 TC_ATOMIC_SET(u8);
 
+#if 0
+/*
+This is just a placeholder to illustrate the queue and mempool interaction
+*/
 void tc_send_data_to_ree(tc_shmem_t * shm)
 {
     tc_mempool_buf_t *tcbuf = NULL;
@@ -20,13 +24,15 @@ void tc_send_data_to_ree(tc_shmem_t * shm)
     if (!tcbuf) {
 	return;
     }
-    //Interface with driver
-
+	
+    //Copy driver's data into tcbuf
+    
     tc_queue_push(&shm->tee_ree_q, tcbuf);
 
     //Mark to inform REE that TEE has placed packets in queue
     tc_atomic_set_u8(&shm->tee_data_ready, 1);
 }
+#endif
 
 void tc_handle_data_from_ree(tc_shmem_t * shm)
 {
