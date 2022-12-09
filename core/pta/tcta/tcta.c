@@ -16,10 +16,7 @@
 
 static tc_shmem_t *shm = NULL;
 
-tc_shmem_t *tc_get_shmem(void)
-{
-    return shm;
-}
+void tc_handle_data_from_ree(tc_shmem_t *);
 
 uint32_t trustcore_smc_handler(uint8_t sub_id, uint64_t arg1,
 			       uint64_t arg2, uint64_t arg3)
@@ -42,14 +39,19 @@ uint32_t trustcore_smc_handler(uint8_t sub_id, uint64_t arg1,
 	    return OPTEE_SMC_RETURN_EBADADDR;
 	}
 	shm = (tc_shmem_t *) va;
-	INFO("TCT Shared memory at 0x%" PRIxPA, shm);
+	INFO("TCT Shared memory at 0x%" PRIxVA, shm);
 	break;
     case TC_NOTIFY_DATA_TEE_SUB_ID:
-	break;
+        if(!shm) {
+	    ERR("Shared memory not yet initialized");
+	    return OPTEE_SMC_RETURN_ENOTAVAIL;
+        }
+	tc_handle_data_from_ree(shm);
+        break;
     default:
 	return OPTEE_SMC_RETURN_EBADCMD;
     }
-    return 0;
+    return OPTEE_SMC_RETURN_OK;
 }
 
 static TEE_Result invoke_command(void *psess __unused,
