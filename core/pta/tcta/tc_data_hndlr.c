@@ -2,6 +2,8 @@
 #include "tc_shared/tc_common.h"
 #include "tc_shared/tc_ipc.h"
 
+TC_ATOMIC_SET(u8);
+
 void tc_send_data_to_ree(tc_shmem_t * shm)
 {
     tc_mempool_buf_t *tcbuf = NULL;
@@ -12,7 +14,7 @@ void tc_send_data_to_ree(tc_shmem_t * shm)
     /* Move received packet into a new pbuf */
     pkt_len = TC_NET_MTU;	//min(TC_NET_MTU, mb->m_pktlen);
 
-    DBG("Received pkt len %d", pkt_len);
+    DBG("Received pkt of len %d to send out to REE", pkt_len);
 
     tcbuf = tc_mempool_get_buffer(&shm->ree_tee_mempool);
     if (!tcbuf) {
@@ -22,6 +24,8 @@ void tc_send_data_to_ree(tc_shmem_t * shm)
 
     tc_queue_push(&shm->tee_ree_q, tcbuf);
 
+    //Mark to inform REE that TEE has placed packets in queue
+    tc_atomic_set_u8(&shm->tee_data_ready, 1);
 }
 
 void tc_handle_data_from_ree(tc_shmem_t * shm)
